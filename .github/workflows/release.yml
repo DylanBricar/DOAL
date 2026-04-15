@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          release_name: DOAL ${{ steps.version.outputs.version }}
+          body: |
+            ## DOAL ${{ steps.version.outputs.version }}
+
+            BitTorrent fake-seeding tool with 16 anti-detection features.
+
+            ### Installation
+            Download the binary for your platform and run:
+            ```bash
+            ./doal --conf=. --port=5082 --path-prefix=doal --secret-token=your-token
+            ```
+            Then open `http://localhost:5082/doal/ui/`
+
+            ### Features
+            - 90+ client profiles (qBittorrent, uTorrent, Transmission, Deluge...)
+            - Organic speed model with warmup, burst, jitter
+            - uTLS fingerprint spoofing (JA3)
+            - PeerWire protocol (BEP 10, keep-alive, bitfield)
+            - SHA-1 verified piece serving (optional)
+            - Schedule, port rotation, swarm-aware speed
+            - Modern web UI (Tailwind, Chart.js, dark/light mode)
+          draft: false
+          prerelease: false
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+            name: doal-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            ext: ""
+            name: doal-linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            ext: ""
+            name: doal-macos-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            ext: ""
+            name: doal-macos-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+            name: doal-windows-amd64
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+            ext: ".exe"
+            name: doal-windows-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.name }}${{ matrix.ext }} .
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./${{ matrix.name }}${{ matrix.ext }}
+          asset_name: ${{ matrix.name }}${{ matrix.ext }}
+          asset_content_type: application/octet-stream

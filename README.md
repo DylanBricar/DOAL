@@ -1,203 +1,237 @@
-# Disclamer
-JOAL is not designed to help or encourage you downloading illegal materials ! You must respect the law applicable in your country. I couldn't be held responsible for illegal activities performed by your usage of JOAL.
+# DOAL
 
-## Official Docker Hub page:
-https://hub.docker.com/r/anthonyraymond/joal
+**BitTorrent fake-seeding tool** with 18 anti-detection features. Written in Go — single binary, zero dependencies, ~10 MB, ~20 MB RAM.
 
-# JOAL
-This is the server application (with an **optional** webui), if you are interested in the desktop app look at [here](https://github.com/anthonyraymond/joal-desktop).
+> Fork of [JOAL](https://github.com/anthonyraymond/joal) (Java), entirely rewritten in Go for performance and portability.
 
-### Which client can JOAL emulate?
+---
 
-| Client        | Support                       | Comment        |  | Client        | Support                       | Comment        |
-| ------------- |:-----------------------------:|----------------|--|---------------|:-----------------------------:|----------------|
-| BitComet      | ![Numwant mess][support-never]| Will never be !|  | Transmission  | ![Yes][support-yes]           |                |
-| BitTorrent    | ![Yes][support-yes]           |                |  | µTorrent      | ![Yes][support-yes]           |                |
-| Deluge        | ![Yes][support-yes]           |                |  | Vuze Azureus  | ![Yes][support-yes]           |                |
-| qBittorrent   | ![Yes][support-yes]           |                |  | Vuze Leap     | ![Yes][support-yes]           |                |
-| rTorrent      | ![Yes][support-yes]           |                |  |
+## Installation
 
-If your favorite client is not yet supported feel free to ask (except for BitComet).<br/>
-Ask for it in GitHub issues or mail <a href="mailto:joal.contact@gmail.com">joal.contact@gmail.com</a>.
+### Pre-built binaries
 
-## Preview
-![preview](readme-assets/webui-preview.png?raw=true)
+Download from [Releases](../../releases) — available for:
+- Linux (amd64, arm64)
+- macOS (amd64, arm64 / Apple Silicon)
+- Windows (amd64, arm64)
 
-
-# HOW TO USE
-## 1. Setting up configuration
-In the folder of your choice (ie: /home/anthony/joal-conf), download the [latest tar.gz release](https://github.com/anthonyraymond/joal/releases/latest) and extract `config.json` `clients` and `torrents`, this folder will be our `joal-conf`.
-
-It must look similar to this:<br/>
-![joal-conf][joal-conf-folder]
-
-## 2. Run with Java
-
-```
-java -jar ./jack-of-all-trades-X.X.X.jar --joal-conf="PATH_TO_CONF"
-```
-
-- `--joal-conf=PATH_TO_CONF` is a **required** argument: path to the joal-conf folder (ie: /home/anthony/joal-conf).
-
-<br />
-By default the web-ui is disabled, you can enable it with some more arguments:
-
-- `--spring.main.web-environment=true`: to enable the web context.
-- `--server.port=YOUR_PORT`: the port to be used for both HTTP and WebSocket connection.
-- `--joal.ui.path.prefix="SECRET_OBFUSCATION_PATH"`: use your own complicated path here (this will be your first layer of security to keep joal secret). This is security though obscurity, but it is required in our case.  *This must contains only alphanumeric characters (no slash, backslash, or any other non-alphanum char)*
-- `--joal.ui.secret-token="SECRET_TOKEN"`: use your own secret token here (this is some kind of a password, choose a complicated one).
-
-Once joal is started head to: `http://localhost:port/SECRET_OBFUSCATION_PATH/ui/` (obviously, replace `SECRET_OBFUSCATION_PATH`) by the value you had chosen
-The `joal.ui.path.prefix` might seems useless but it's actually **crucial** to set it as complex as possible to prevent people to know that joal is running on your server.
-
-If you want to use iframe you may also pass the `joal.iframe.enabled=true` argument. If you don't known what that is just ignore it.
-
-## 2. Run with Docker
-
-In next command you have to replace `PATH_TO_CONF`, `PORT`, `SECRET_OBFUSCATION_PATH` and `SECRET_TOKEN` with your desired values.
-```
-docker run -d \
-    -p PORT:PORT \
-    -v PATH_TO_CONF:/data \
-    --name="joal" \
-    anthonyraymond/joal:X.X.X \
-    --joal-conf="/data" \
-    --spring.main.web-environment=true \
-    --server.port="PORT" \
-    --joal.ui.path.prefix="SECRET_OBFUSCATION_PATH" \
-    --joal.ui.secret-token="SECRET_TOKEN"
-```
-Or the equivalent docker-compose service.
-```
-version: "2"
-services:
-  joal:
-    image: anthonyraymond/joal:X.X.X
-    container_name: joal
-    restart: unless-stopped
-    volumes:
-      - PATH_TO_CONF:/data
-    ports:
-      - PORT:PORT
-    command: ["--joal-conf=/data", "--spring.main.web-environment=true", "--server.port=PORT", "--joal.ui.path.prefix=SECRET_OBFUSCATION_PATH", "--joal.ui.secret-token=SECRET_TOKEN"]
-```
-
-Replace the `X.X.X` in `anthonyraymond/joal:X.X.X` with the desired version of joal (all versions are available [here](https://hub.docker.com/r/anthonyraymond/joal/tags)).
-
-
-## 3. Start seeding
-Just add some `.torrent` files to the `joal-conf/torrents` folder. There is no need to restart JOAL to add more torrents, add it to the folder and JOAL will be aware of after few seconds.
-
-If WebUi is enabled you can also drag and drop torrents in the joal ui.
-
-
-## Configuration file
-### Application configuration
-The application configuration belongs in `joal-conf/config.json`.
-
-```
-{
-  "minUploadRate" : 30,
-  "maxUploadRate" : 160,
-  "simultaneousSeed" : 20,
-  "client" : "qbittorrent-3.3.16.client",
-  "keepTorrentWithZeroLeechers" : true,
-  "uploadRatioTarget": -1.0
-}
-```
-- `minUploadRate` : The minimum uploadRate you want to fake (in kB/s) (**required**)
-- `maxUploadRate` : The maximum uploadRate you want to fake (in kB/s) (**required**)
-- `simultaneousSeed` : How many torrents should be seeding at the same time (**required**)
-- `client` : The name of the .client file to use in `joal-conf/clients/` (**required**)
-- `keepTorrentWithZeroLeechers`: should JOAL keep torrent with no leechers or seeders. If yes, torrent with no peers will be seed at 0kB/s. If false torrents will be deleted on 0 peers reached. (**required**)
-- `uploadRatioTarget`: when JOAL has uploaded X times the size of the torrent **in a single session**, the torrent is removed. If -1.0 torrents are never removed.
-
-## Proxy Configuration
-
-You can route JOAL traffic (tracker announcements and IP checks) through an HTTP/HTTPS proxy. This is particularly useful if you run JOAL behind a VPN container (like Gluetun) or want to hide your real IP address.
-
-To enable the proxy, set the `JAVA_TOOL_OPTIONS` environment variable with standard Java proxy properties.
-
-### Docker Run Example
+### Build from source
 
 ```bash
-docker run -d \
-    -p PORT:PORT \
-    -v PATH_TO_CONF:/data \
-    -e "JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=10.10.10.10 -Dhttp.proxyPort=8888 -Dhttp.nonProxyHosts=localhost|127.*" \
-    --name="joal" \
-    anthonyraymond/joal:X.X.X \
-    --joal-conf="/data" \
-    --spring.main.web-environment=true \
-    --server.port="PORT" \
-    --joal.ui.path.prefix="SECRET_OBFUSCATION_PATH" \
-    --joal.ui.secret-token="SECRET_TOKEN" \
+git clone <this-repo>
+cd doal-go
+go build -ldflags="-s -w" -o doal .
 ```
 
-### Docker Compose Example
-```yaml
-version: "2"
-services:
-  joal:
-    image: anthonyraymond/joal:X.X.X
-    container_name: joal
-    restart: unless-stopped
-    environment:
-      # Configure the Proxy Host and Port here
-      # Important: You MUST configure 'http.nonProxyHosts' to exclude localhost, 
-      # otherwise the internal Web UI might become unreachable.
-      - JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=10.10.10.10 -Dhttp.proxyPort=8888 -Dhttp.nonProxyHosts="localhost|127.*|10.*|192.168.*"
-    volumes:
-      - PATH_TO_CONF:/data
-    ports:
-      - PORT:PORT
-    command: ["--joal-conf=/data", "--spring.main.web-environment=true", "--server.port=PORT", "--joal.ui.path.prefix=SECRET_OBFUSCATION_PATH", "--joal.ui.secret-token=SECRET_TOKEN"]
+Requires Go 1.23+.
+
+---
+
+## Usage
+
+```bash
+./doal --conf=. --port=5082 --path-prefix=doal --secret-token=your-secret
 ```
-### Supported Properties
 
-* `-Dhttp.proxyHost`: The hostname or IP address of your proxy server.
-* `-Dhttp.proxyPort`: The port of your proxy server.
-* `-Dhttp.nonProxyHosts`: A pipe-separated list (`|`) of hosts that should be reached directly (bypassing the proxy). **It is highly recommended to include `localhost` and `127.*` to ensure the Web UI works correctly.**
+Then open **http://localhost:5082/doal/ui/**
 
+### CLI flags
 
-## Supported browser (for web-ui)
-| Client                              | Support                 | Comment                                              |
-| ----------------------------------- |:-----------------------:|------------------------------------------------------|
-| ![Google Chrome][browser-chrome]    | ![yes][support-yes]     |                                                      |
-| ![Mozilla Firefox][browser-firefox] | ![yes][support-yes]     |                                                      |
-| ![Opera][browser-opera]             | ![yes][support-yes]     |                                                      |
-| ![Opera mini][browser-opera-mini]   | ![no][support-no]       | Lack of `referrer-policy` & No support for WebSocket |
-| ![Safari][browser-safari]           | ![no][support-no]       | Lack of `referrer-policy`                            |
-| ![Edge][browser-edge]               | ![no][support-no]       | Lack of `referrer-policy`                            |
-| ![Internet explorer][browser-ie]    | ![no][support-never]    | Not enough space to explain...                       |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--conf` | (required) | Path to config directory (contains `config.json`, `clients/`, `torrents/`) |
+| `--port` | `5081` | Web server port |
+| `--path-prefix` | `doal` | URL prefix (UI at `/{prefix}/ui/`) |
+| `--secret-token` | (required) | Auth token for WebSocket (use `x` to disable) |
 
-Some non-supported browser might work, but they may be unsafe due to the lack of support for `referrer-policy`.
+### Directory structure
 
+```
+your-config-dir/
+├── config.json          # Main configuration
+├── clients/             # 90+ BitTorrent client profiles (.client files)
+├── torrents/            # Drop .torrent files here
+│   ├── movie.torrent    # Torrent metadata
+│   └── movie.mkv        # (Optional) Real file for SHA-1 piece verification
+└── upload-stats.txt     # Auto-generated, tracks cumulative upload
+```
 
-## Community projects
-Those projects are maintained by their individual authors, if you have any question on how to use it use the corresponding repository to ask questions. I do not offer any support nor responsability for these projets. But i want a say a special **thanks** to them for speinding some time on this project.
-- [Addon for Home Assistant](https://github.com/alexbelgium/hassio-addons/tree/master/joal) by [alexbelgium](https://github.com/alexbelgium)
-- [Ansible role](https://github.com/slundi/ansible-joal) by [slundi](https://github.com/slundi)
+---
 
+## Configuration
 
-# Thanks:
-This project use a modified version of the awesome [mpetazzoni/ttorrent](http://mpetazzoni.github.com/ttorrent/) library. Thanks to **mpetazzoni** for this.
-Also this project has benefited from the help of several people, see [Thanks.md](THANKS.md)
+All settings are configurable via the web UI or directly in `config.json`.
 
-## Supporters
-[![Thanks for providing Jetbrain license](readme-assets/jetbrains.svg)](https://www.jetbrains.com/?from=joal)
+### Bandwidth
 
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `minUploadRate` | int | `100` | Minimum upload speed in kB/s per torrent |
+| `maxUploadRate` | int | `1000` | Maximum upload speed in kB/s per torrent |
+| `simultaneousSeed` | int | `5` | Number of torrents seeded simultaneously |
+| `uploadRatioTarget` | float | `-1` | Target ratio (-1 = unlimited, >0 = auto-pause at ratio) |
+| `minSpeedWhenNoLeechers` | int | `50` | Minimum speed in kB/s when 0 leechers (0 = disable) |
+| `keepTorrentWithZeroLeechers` | bool | `false` | Continue seeding torrents with 0 leechers |
+| `maxAnnounceFailures` | int | `5` | Remove torrent after N consecutive announce failures (0 = unlimited) |
 
+### Anti-Detection
 
-[support-never]:readme-assets/warning.png
-[support-no]:readme-assets/cross-mark.png
-[support-yes]:readme-assets/check-mark.png
-[joal-conf-folder]:readme-assets/joal-conf-folder.png
-[browser-chrome]:readme-assets/browsers/chrome.png
-[browser-firefox]:readme-assets/browsers/firefox.png
-[browser-opera]:readme-assets/browsers/opera.png
-[browser-opera-mini]:readme-assets/browsers/opera-mini.png
-[browser-safari]:readme-assets/browsers/safari.png
-[browser-ie]:readme-assets/browsers/ie.png
-[browser-edge]:readme-assets/browsers/edge.png
-[jetbrain-logo]:readme-assets/jetbrains.svg
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `client` | string | `utorrent-3.5.0_43916.client` | BitTorrent client to emulate (90+ profiles) |
+| `speedModel` | string | `ORGANIC` | Speed variation model (`ORGANIC` = realistic, `UNIFORM` = constant) |
+| `announceJitterPercent` | int | `10` | Random variation on announce intervals (0-30%) |
+| `peerResponseMode` | string | `BITFIELD` | How to respond to peer connections (`NONE`, `HANDSHAKE_ONLY`, `BITFIELD`, `FAKE_DATA`) |
+| `perTorrentBandwidth` | bool | `true` | Each torrent gets independent speed (vs shared) |
+| `enableBurstSpeed` | bool | `true` | Simulate upload speed bursts (1.5-3x) |
+| `simulateDownload` | bool | `false` | Report download progress to tracker (left > 0 then completed) |
+| `enablePortRotation` | bool | `false` | Change announced port every 30-60 min |
+| `rotateClientOnRestart` | bool | `false` | Pick a random client profile on each start |
+| `swarmAwareSpeed` | bool | `true` | Boost speed +20% for torrents with high leecher demand |
+
+### Network
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `proxyEnabled` | bool | `false` | Route tracker announces through a proxy |
+| `proxyType` | string | `socks5` | Proxy type (`socks5` or `http`) |
+| `proxyUrl` | string | `""` | Proxy URL (e.g. `socks5://user:pass@host:1080`) |
+| `announceIp` | string | `""` | Override IP reported to trackers (empty = auto-detect) |
+
+### Schedule
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enableSchedule` | bool | `false` | Seed only during configured hours |
+| `scheduleStartHour` | int | `22` | Hour to start seeding (0-23) |
+| `scheduleEndHour` | int | `7` | Hour to stop seeding (0-23) |
+
+---
+
+## Anti-Detection Features (18)
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 1 | **Client Emulation** | 90+ client profiles with correct User-Agent, peer_id, key, query string order |
+| 2 | **uTLS Fingerprint** | TLS handshake matches the emulated client (Chrome/Firefox/iOS profiles) |
+| 3 | **Organic Speed** | Random walk with momentum, Gaussian noise, micro-jitter, occasional drops |
+| 4 | **Speed Warmup** | Gradual ramp from 0 to 100% over 60 seconds after start |
+| 5 | **Burst Speed** | Random speed spikes (1.5-3x) simulating new leecher arrival |
+| 6 | **Upload Byte Jitter** | Random noise on accumulated bytes to avoid exact multiples |
+| 7 | **Announce Jitter** | Random variation on tracker announce intervals |
+| 8 | **PeerWire Protocol** | Responds to incoming peer connections with valid BT handshake |
+| 9 | **BEP 10 Extension** | Extension protocol handshake (ut_metadata, ut_pex) |
+| 10 | **PEX Messages** | Periodic Peer Exchange messages to appear as real peer |
+| 11 | **DHT Node** | Minimal DHT node responding to ping/find_node/get_peers |
+| 12 | **Keep-Alive** | 120-second keep-alive messages on peer connections |
+| 13 | **Reserved Bytes** | Correct DHT + Extension Protocol + Fast Extension bits in handshake |
+| 14 | **SimulateDownload** | Reports download progress with correct left/downloaded/completed events |
+| 15 | **Port Rotation** | Changes announced port every 30-60 minutes |
+| 16 | **Client Rotation** | Switches to a different client profile on each restart |
+| 17 | **SHA-1 Piece Serving** | Serves real file data for piece verification (when data file is present) |
+| 18 | **Announce Stagger** | Spreads initial announces over 0-15 seconds to avoid timestamp clustering |
+
+---
+
+## Web UI
+
+Modern dark-themed dashboard built with Tailwind CSS, Chart.js, and Lucide icons.
+
+- **Real-time speed graph** with organic variations
+- **Per-torrent stats** (speed, upload, seeders, leechers)
+- **Per-tracker stats** with pause/resume per tracker
+- **Pause/resume individual torrents**
+- **Drag & drop torrent upload**
+- **Dark/Light mode toggle**
+- **Desktop notifications**
+- **Auto-connect** (no login modal needed with `--secret-token=x`)
+- **Persistent history** across page refreshes (sessionStorage)
+
+---
+
+## SHA-1 Piece Verification
+
+To enable real piece serving (passes tracker SHA-1 checks):
+
+1. Place the real data file in `torrents/` with the same base name as the `.torrent`:
+   ```
+   torrents/
+     MyMovie.2024.1080p.torrent    # torrent metadata
+     MyMovie.2024.1080p.mkv        # actual file content
+   ```
+2. DOAL auto-detects the pair on start (matched by file size)
+3. When a peer requests a piece, DOAL serves the real bytes instead of random data
+
+Without the data file, DOAL falls back to random bytes (FAKE_DATA mode).
+
+---
+
+## Development
+
+```bash
+# Run tests (255 tests across 7 packages)
+go test ./... -count=1 -timeout=120s
+
+# Run with race detector
+go test ./... -race
+
+# Lint
+go vet ./...
+
+# Build optimized binary
+go build -ldflags="-s -w" -o doal .
+```
+
+### Project structure
+
+```
+doal-go/
+├── main.go                 # Engine, CLI, start/stop/pause/rotate
+├── config/config.go        # 22-field JSON config + validation
+├── torrent/
+│   ├── parser.go           # Bencode parser, .torrent files
+│   └── watcher.go          # fsnotify file watcher
+├── bandwidth/
+│   ├── dispatcher.go       # Speed computation, upload accumulation
+│   ├── organic_speed.go    # Organic speed provider (random walk)
+│   └── random_speed.go     # Uniform random speed provider
+├── announce/
+│   ├── announcer.go        # HTTP tracker announce
+│   ├── scheduler.go        # Multi-torrent scheduler + jitter
+│   ├── client_emulator.go  # 90+ client profiles
+│   └── tls.go              # uTLS fingerprint spoofing
+├── peerwire/
+│   ├── server.go           # BT handshake + bitfield + BEP10 + PEX
+│   └── piececache.go       # SHA-1 verified piece serving
+├── dht/dht.go              # Minimal DHT node (BEP 5)
+├── persistence/stats.go    # Upload stats file persistence
+└── web/
+    ├── server.go            # HTTP + WebSocket server
+    ├── stomp.go             # STOMP 1.2 protocol
+    ├── handlers.go          # Message routing + broadcast
+    └── static/index.html    # Embedded frontend (Tailwind + Chart.js)
+```
+
+---
+
+## Original Project
+
+This is a complete rewrite of [JOAL](https://github.com/anthonyraymond/joal) by Anthony Raymond.
+
+**Key differences from JOAL:**
+- Rewritten from Java to Go (9 MB binary vs 33 MB JAR + 200 MB JVM)
+- 18 anti-detection features (vs 6 in original)
+- uTLS fingerprint spoofing
+- DHT/PEX participation
+- SHA-1 piece verification
+- Proxy support (SOCKS5/HTTP)
+- Modern Tailwind UI (vs legacy React)
+- Per-torrent/tracker pause/resume
+- Torrent rotation
+- Upload ratio enforcement
+
+---
+
+## License
+
+MIT
