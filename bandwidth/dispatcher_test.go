@@ -1,6 +1,7 @@
 package bandwidth
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -232,9 +233,12 @@ func TestDispatcherScheduleOutsideWindow(t *testing.T) {
 	cfg.ScheduleEndHour = end
 
 	sp := NewRandomSpeedProvider(100_000, 200_000)
+	var mu sync.Mutex
 	var lastSpeeds map[string]int64
 	d := NewDispatcher(cfg, sp, func(speeds map[string]int64, _ int64) {
+		mu.Lock()
 		lastSpeeds = speeds
+		mu.Unlock()
 	})
 
 	d.RegisterTorrent("s1", 0)
@@ -242,6 +246,8 @@ func TestDispatcherScheduleOutsideWindow(t *testing.T) {
 	time.Sleep(6 * time.Second)
 	d.Stop()
 
+	mu.Lock()
+	defer mu.Unlock()
 	for hash, spd := range lastSpeeds {
 		if spd != 0 {
 			t.Errorf("speed for %s should be 0 outside schedule window, got %d", hash, spd)
