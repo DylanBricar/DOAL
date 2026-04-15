@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#09090b">
+  <title>DOAL - Panneau de Contrôle</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            border: 'hsl(240 3.7% 15.9%)',
+            input: 'hsl(240 3.7% 15.9%)',
+            ring: 'hsl(240 4.9% 83.9%)',
+            background: 'hsl(240 10% 3.9%)',
+            foreground: 'hsl(0 0% 98%)',
+            card: { DEFAULT: 'hsl(240 10% 3.9%)', foreground: 'hsl(0 0% 98%)' },
+            muted: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
+            accent: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
+            primary: { DEFAULT: 'hsl(0 0% 98%)', foreground: 'hsl(240 5.9% 10%)' },
+            destructive: { DEFAULT: 'hsl(0 62.8% 30.6%)', foreground: 'hsl(0 0% 98%)' },
+          },
+          borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' },
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: hsl(240 3.7% 15.9%); border-radius: 3px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+    .status-dot.pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .stat-unit { font-size: 14px; font-weight: 400; opacity: 0.6; margin-left: 2px; }
+    .progress-bar { width: 100%; height: 6px; background: hsl(240 3.7% 15.9%); border-radius: 3px; overflow: hidden; min-width: 80px; }
+    .progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, hsl(142 76% 36%), hsl(142 71% 45%)); transition: width 0.5s; }
+    .nav-tab.active { color: hsl(0 0% 98%); }
+    .nav-tab.active::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2px; background:hsl(0 0% 98%); border-radius:2px 2px 0 0; }
+    .toast-container { position: fixed; top: 80px; right: 24px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+    .toast { padding: 14px 20px; background: hsl(240 10% 6%); border: 1px solid hsl(240 3.7% 18%); border-radius: 0.75rem; font-size: 13px; max-width: 380px; animation: slideIn 0.3s; box-shadow: 0 8px 32px rgba(0,0,0,0.4); backdrop-filter: blur(12px); display: flex; align-items: center; gap: 10px; }
+    .toast::before { content: ''; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .toast.success { border-left: 3px solid hsl(142 76% 36%); } .toast.success::before { background: hsl(142 76% 36%); }
+    .toast.error { border-left: 3px solid hsl(0 84% 60%); } .toast.error::before { background: hsl(0 84% 60%); }
+    .toast.info { border-left: 3px solid hsl(217 91% 60%); } .toast.info::before { background: hsl(217 91% 60%); }
+    @keyframes slideIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.8); display:flex; align-items:center; justify-content:center; z-index:1000; backdrop-filter:blur(4px); }
+    .modal-overlay.hidden { display: none; }
+    .dragover { border-color: hsl(0 0% 98%) !important; background: hsl(240 3.7% 15.9%) !important; }
+    .toggle { position:relative; width:44px; height:24px; flex-shrink:0; }
+    .toggle input { opacity:0; width:0; height:0; position:absolute; }
+    .toggle-slider { position:absolute; cursor:pointer; inset:0; background:hsl(240 3.7% 15.9%); border-radius:12px; transition:0.2s; border:1px solid hsl(240 3.7% 20%); }
+    .toggle-slider::before { content:''; position:absolute; width:18px; height:18px; left:2px; bottom:2px; background:white; border-radius:50%; transition:0.2s; }
+    .toggle input:checked + .toggle-slider { background:hsl(0 0% 98%); }
+    .toggle input:checked + .toggle-slider::before { transform:translateX(20px); background:hsl(240 5.9% 10%); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    html:not(.dark) {
+      --tw-bg-opacity: 1;
+    }
+    html:not(.dark) body {
+      background: #ffffff;
+      color: #0a0a0a;
+    }
+    html:not(.dark) .border-border { border-color: #e4e4e7; }
+    html:not(.dark) .bg-card { background: #ffffff; }
+    html:not(.dark) .text-muted-foreground { color: #52525b; }
+    html:not(.dark) .bg-background { background: #fafafa; }
+    html:not(.dark) .text-foreground { color: #09090b; }
+    html:not(.dark) .bg-accent\/50 { background: rgba(244,244,245,0.5); }
+    html:not(.dark) .hover\:bg-accent\/30:hover { background: rgba(244,244,245,0.3); }
+    html:not(.dark) input, html:not(.dark) select { background: #ffffff; border-color: #d4d4d8; color: #09090b; }
+    html:not(.dark) .toggle-slider { background: #d4d4d8; }
+    html:not(.dark) .progress-bar { background: #e4e4e7; }
+    html:not(.dark) .toast { background: #ffffff; border-color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+    html:not(.dark) .modal-overlay > div { background: #ffffff; }
+    html:not(.dark) header { background: #ffffff !important; border-bottom-color: #e4e4e7; }
+    html:not(.dark) nav { background: #ffffff !important; border-bottom-color: #e4e4e7; }
+    html:not(.dark) .nav-tab.active { color: #09090b; }
+    html:not(.dark) .nav-tab.active::after { background: #09090b; }
+    html:not(.dark) th { background: #f4f4f5; color: #52525b; }
+    html:not(.dark) footer { background: #ffffff; border-top-color: #e4e4e7; }
+  </style>
+</head>
+<body class="bg-background text-foreground min-h-screen">
+  <div class="flex flex-col min-h-screen">
+    <!-- Header -->
+    <header class="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-xl">
+      <div class="flex h-14 items-center justify-between px-6">
+        <div class="flex items-center gap-4">
+          <span class="text-lg font-bold tracking-tight">DOAL</span>
+          <span id="connStatus" class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-500/10 text-red-400">
+            <span class="status-dot"></span> <span>Déconnecté</span>
+          </span>
+          <span id="seedStatus" class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-500/10 text-blue-400" style="display:none">
+            <span class="status-dot pulse"></span> <span>Seed actif</span>
+          </span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btnStart" class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 transition disabled:opacity-40" onclick="startSeeding()" disabled><i data-lucide="play" class="w-3.5 h-3.5"></i> Démarrer</button>
+          <button id="btnStop" class="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 transition disabled:opacity-40" onclick="stopSeeding()" disabled style="display:none"><i data-lucide="power" class="w-3.5 h-3.5"></i> Arrêter</button>
+          <button class="inline-flex items-center rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition" onclick="toggleTheme()" id="themeBtn"><i data-lucide="moon" class="w-3.5 h-3.5"></i></button>
+          <!-- settings button removed: auto-connect -->
+        </div>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="border-b border-border bg-background">
+      <nav class="flex px-6 gap-1">
+        <button class="nav-tab active relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="dashboard">Tableau de Bord</button>
+        <button class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="config">Configuration</button>
+        <button class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="history">Historique</button>
+      </nav>
+    </div>
+
+    <!-- Content -->
+    <main class="flex-1 p-6 max-w-[1400px] mx-auto w-full">
+
+      <!-- DASHBOARD -->
+      <div id="tab-dashboard" class="tab-content active">
+        <!-- Stats -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
+            <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="upload" class="w-3.5 h-3.5"></i>Vitesse totale</div>
+            <div class="text-2xl font-bold" id="statTotalSpeed">0<span class="stat-unit">kB/s</span></div>
+            <p class="text-xs text-muted-foreground mt-1" id="statSpeedDetail">Aucun seed actif</p>
+          </div>
+          <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
+            <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="hard-drive" class="w-3.5 h-3.5"></i>Torrents actifs</div>
+            <div class="text-2xl font-bold" id="statActiveTorrents">0</div>
+            <p class="text-xs text-muted-foreground mt-1" id="statTorrentDetail">0 torrents chargés</p>
+          </div>
+          <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
+            <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="monitor" class="w-3.5 h-3.5"></i>Client émulé</div>
+            <div class="text-sm font-semibold break-all leading-tight" id="statClient">-</div>
+            <p class="text-xs text-muted-foreground mt-1" id="statClientDetail">Non démarré</p>
+          </div>
+          <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
+            <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="database" class="w-3.5 h-3.5"></i>Upload cumulé</div>
+            <div class="text-2xl font-bold" id="statTotalUploaded">0<span class="stat-unit">KB</span></div>
+            <p class="text-xs text-muted-foreground mt-1">Depuis le démarrage</p>
+          </div>
+        </div>
+
+        <!-- Speed Chart -->
+        <div class="rounded-lg border border-border bg-card p-5 mb-6">
+          <h3 class="text-sm font-semibold mb-3">Vitesse d'Upload</h3>
+          <div style="position:relative;height:120px"><canvas id="speedChart"></canvas></div>
+        </div>
+
+        <!-- Seed Table -->
+        <div class="rounded-lg border border-border bg-card mb-6">
+          <div class="p-5 pb-3"><h3 class="text-sm font-semibold">Torrents en Seed</h3><p class="text-xs text-muted-foreground mt-0.5">Suivi en temps réel</p></div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="border-t border-border">
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Nom</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Taille</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Vitesse</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Upload</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Seeders</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Leechers</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Progrès</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Annonce</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Actions</th>
+              </tr></thead>
+              <tbody id="torrentTableBody" class="divide-y divide-border">
+                <tr><td colspan="9"><div class="text-center py-10 text-muted-foreground"><i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucun torrent en seed</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tracker Stats -->
+        <div class="rounded-lg border border-border bg-card mb-6">
+          <div class="p-5 pb-3"><h3 class="text-sm font-semibold">Stats par Tracker</h3></div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="border-t border-border">
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Tracker</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Upload total</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Torrents</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Action</th>
+              </tr></thead>
+              <tbody id="trackerStatsBody" class="divide-y divide-border">
+                <tr><td colspan="4"><div class="text-center py-8 text-muted-foreground"><i data-lucide="bar-chart-2" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucune donnée tracker</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Add Torrents -->
+        <div class="rounded-lg border border-border bg-card">
+          <div class="p-5 pb-3"><h3 class="text-sm font-semibold">Ajouter des Torrents</h3></div>
+          <div class="px-5">
+            <div id="dropzone" class="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-muted-foreground transition mb-4">
+              <i data-lucide="upload-cloud" class="w-8 h-8 mx-auto mb-2 text-muted-foreground"></i>
+              <p class="text-sm text-muted-foreground">Déposez des fichiers .torrent ici</p>
+              <p class="text-xs text-muted-foreground/60 mt-1">ou cliquez pour parcourir</p>
+              <input type="file" id="fileInput" accept=".torrent" multiple class="hidden">
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="border-t border-border">
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Fichier</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Taille</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Action</th>
+              </tr></thead>
+              <tbody id="torrentFileTableBody" class="divide-y divide-border">
+                <tr><td colspan="3"><div class="text-center py-8 text-muted-foreground"><i data-lucide="folder" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucun torrent chargé</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- CONFIG -->
+      <div id="tab-config" class="tab-content">
+        <div class="rounded-lg border border-border bg-card p-6">
+          <div class="flex items-center justify-between mb-6">
+            <div><h3 class="text-sm font-semibold">Configuration</h3><p class="text-xs text-muted-foreground mt-0.5">Paramètres du moteur de seed et anti-détection</p></div>
+            <button class="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:opacity-90 transition" onclick="saveConfig()"><i data-lucide="save" class="w-3.5 h-3.5"></i> Sauvegarder</button>
+          </div>
+
+          <!-- Bandwidth -->
+          <div class="mb-8">
+            <div class="flex items-center gap-2 text-sm font-semibold mb-4 pb-3 border-b border-border"><i data-lucide="zap" class="w-4 h-4 text-yellow-500"></i> Bande passante</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Vitesse min upload (kB/s)</label><input type="number" id="cfgMinUpload" min="0" value="100" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">Recommandé : 100-300 kB/s</p></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Vitesse max upload (kB/s)</label><input type="number" id="cfgMaxUpload" min="0" value="1000" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">Écart x2-x4 avec le min</p></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Seeds simultanés</label><input type="number" id="cfgSimultaneous" min="1" value="5" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Ratio cible</label><input type="number" id="cfgRatioTarget" step="0.1" value="-1" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">-1 = seed illimité</p></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Vitesse min sans leechers (kB/s)</label><input type="number" id="cfgMinNoLeechers" min="0" value="50" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">0 pour désactiver</p></div>
+            </div>
+          </div>
+
+          <!-- Anti-detection -->
+          <div class="mb-8">
+            <div class="flex items-center gap-2 text-sm font-semibold mb-4 pb-3 border-b border-border"><i data-lucide="shield" class="w-4 h-4 text-blue-500"></i> Anti-détection</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Client émulé</label><select id="cfgClient" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"></select></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Modèle de vitesse</label><select id="cfgSpeedModel" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><option value="UNIFORM">Uniforme</option><option value="ORGANIC">Organique</option></select></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Jitter d'annonce (%)</label><input type="number" id="cfgJitter" min="0" max="30" value="10" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Réponse aux pairs</label><select id="cfgPeerResponse" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><option value="NONE">Aucun</option><option value="HANDSHAKE_ONLY">Handshake</option><option value="BITFIELD">Bitfield</option><option value="FAKE_DATA">Données simulées</option></select></div>
+            </div>
+          </div>
+
+          <!-- Advanced -->
+          <div>
+            <div class="flex items-center gap-2 text-sm font-semibold mb-4 pb-3 border-b border-border"><i data-lucide="sliders" class="w-4 h-4 text-purple-500"></i> Options avancées</div>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Bande passante par torrent</p><p class="text-xs text-muted-foreground mt-0.5">Chaque torrent reçoit indépendamment la vitesse configurée</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgPerTorrent"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Pics de vitesse (burst)</p><p class="text-xs text-muted-foreground mt-0.5">Simule des pics d'upload aléatoires</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgBurst"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Simuler un téléchargement</p><p class="text-xs text-muted-foreground mt-0.5">Fait croire au tracker qu'un download est en cours</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgSimDownload"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Rotation de port</p><p class="text-xs text-muted-foreground mt-0.5">Change le port toutes les 30-60 min</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgPortRotation"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Garder torrents sans leechers</p><p class="text-xs text-muted-foreground mt-0.5">Continue de seed même sans leecher</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgKeepZeroLeechers"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Rotation de client au redémarrage</p><p class="text-xs text-muted-foreground mt-0.5">Choisit un client BitTorrent aléatoire à chaque démarrage du seed</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgRotateClient"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Vitesse adaptée au swarm</p><p class="text-xs text-muted-foreground mt-0.5">Augmente la vitesse (+20%) quand la demande leecher est élevée</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgSwarmAware"><span class="toggle-slider"></span></label></div>
+            </div>
+          </div>
+
+          <!-- Réseau -->
+          <div class="mt-6 mb-8">
+            <div class="flex items-center gap-2 text-sm font-semibold mb-4 pb-3 border-b border-border"><i data-lucide="globe" class="w-4 h-4 text-cyan-500"></i> Réseau</div>
+            <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition mb-3">
+              <div class="flex-1"><p class="text-sm font-medium">Utiliser un proxy</p><p class="text-xs text-muted-foreground mt-0.5">Route les annonces tracker via un proxy SOCKS5 ou HTTP</p></div>
+              <label class="toggle ml-4"><input type="checkbox" id="cfgProxyEnabled"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Type de proxy</label>
+                <select id="cfgProxyType" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP</option>
+                </select></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">URL du proxy</label>
+                <input type="text" id="cfgProxyUrl" placeholder="socks5://user:pass@host:1080" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"></div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">IP annoncée</label>
+                <input type="text" id="cfgAnnounceIp" placeholder="Laisser vide = automatique" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
+                <p class="text-xs text-muted-foreground mt-1.5">IP reportée aux trackers. Vide = IP de connexion</p></div>
+              <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Échecs max avant suppression</label>
+                <input type="number" id="cfgMaxFailures" min="0" value="5" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
+                <p class="text-xs text-muted-foreground mt-1.5">Nombre d'échecs consécutifs avant de retirer un torrent (0 = illimité)</p></div>
+            </div>
+          </div>
+
+          <!-- Schedule -->
+          <div class="mt-6">
+            <div class="flex items-center gap-2 text-sm font-semibold mb-4 pb-3 border-b border-border"><i data-lucide="clock" class="w-4 h-4 text-blue-500"></i> Planification horaire</div>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Activer la planification</p><p class="text-xs text-muted-foreground mt-0.5">Seed uniquement pendant les heures configurées (vitesse 0 hors plage)</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgEnableSchedule"><span class="toggle-slider"></span></label></div>
+              <div class="grid grid-cols-2 gap-4">
+                <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Heure de début (0-23)</label><input type="number" id="cfgScheduleStart" min="0" max="23" value="22" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">Heure à laquelle démarrer le seed</p></div>
+                <div><label class="text-xs font-medium text-muted-foreground block mb-1.5">Heure de fin (0-23)</label><input type="number" id="cfgScheduleEnd" min="0" max="23" value="7" class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"><p class="text-xs text-muted-foreground mt-1.5">Heure à laquelle arrêter le seed</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- HISTORY -->
+      <div id="tab-history" class="tab-content">
+        <div class="rounded-lg border border-border bg-card p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div><h3 class="text-sm font-semibold">Historique</h3><p class="text-xs text-muted-foreground mt-0.5">Journal en temps réel</p></div>
+            <button class="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition" onclick="clearHistory()"><i data-lucide="trash" class="w-3.5 h-3.5"></i> Effacer</button>
+          </div>
+          <div id="historyLog" class="space-y-2 max-h-[500px] overflow-y-auto">
+            <div class="text-center py-10 text-muted-foreground empty-state"><i data-lucide="scroll-text" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">L'historique est vide</p></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer class="border-t border-border py-3 text-center text-xs text-muted-foreground">DOAL — Outil de test anti-ratio-cheating</footer>
+  </div>
+
+  <!-- No connection modal — auto-connect -->
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+  // ===== STOMP Client =====
+  class StompClient {
+    constructor(url, headers) { this.url=url; this.headers=headers; this.subscriptions={}; this.subId=0; this.connected=false; this.ws=null; this.onConnect=null; this.onDisconnect=null; this.onError=null; this.heartbeatOut=null; }
+    connect() {
+      this.ws = new WebSocket(this.url, ['v12.stomp','v11.stomp']);
+      this.ws.onopen = () => { const h=Object.entries(this.headers).map(([k,v])=>k+':'+v).join('\n'); this.ws.send('CONNECT\naccept-version:1.2\nheart-beat:10000,10000\n'+h+'\n\n\0'); };
+      this.ws.onmessage = (evt) => this._onMessage(evt.data);
+      this.ws.onclose = () => { this.connected=false; this._stopHB(); if(this.onDisconnect) this.onDisconnect(); };
+      this.ws.onerror = (e) => { if(this.onError) this.onError(e); };
+    }
+    _startHB() { this._stopHB(); this.heartbeatOut=setInterval(()=>{ if(this.ws&&this.ws.readyState===1) this.ws.send('\n'); },10000); }
+    _stopHB() { if(this.heartbeatOut){clearInterval(this.heartbeatOut);this.heartbeatOut=null;} }
+    _onMessage(data) {
+      if(data==='\n'||data==='\r\n'||data.trim()==='') return;
+      const he=data.indexOf('\n\n'); if(he<0) return;
+      const hp=data.substring(0,he), bo=he+2;
+      const hl=hp.split(/\r?\n/), cmd=hl[0]; let headers={};
+      for(let i=1;i<hl.length;i++){const s=hl[i].indexOf(':');if(s>0)headers[hl[i].substring(0,s)]=hl[i].substring(s+1);}
+      const ni=data.indexOf('\0',bo); const body=ni>=0?data.substring(bo,ni):data.substring(bo);
+      switch(cmd){
+        case 'CONNECTED': this.connected=true; this._startHB(); if(this.onConnect)this.onConnect(); break;
+        case 'MESSAGE': const sid=headers['subscription']; if(this.subscriptions[sid]){this.subscriptions[sid]({headers,body});if(headers['ack'])try{this.ws.send('ACK\nid:'+headers['ack']+'\n\n\0');}catch(e){}} break;
+        case 'ERROR': if(this.onError)this.onError(body); break;
+      }
+    }
+    subscribe(dest,cb,ack){const id='sub-'+(this.subId++);this.subscriptions[id]=cb;let f='SUBSCRIBE\nid:'+id+'\ndestination:'+dest+'\n';if(ack)f+='ack:'+ack+'\n';f+='\n\0';this.ws.send(f);return id;}
+    unsubscribe(id){this.ws.send('UNSUBSCRIBE\nid:'+id+'\n\n\0');delete this.subscriptions[id];}
+    send(dest,body){const b=body||'';const cl=new Blob([b]).size;this.ws.send('SEND\ndestination:'+dest+'\ncontent-type:application/json\ncontent-length:'+cl+'\n\n'+b+'\0');}
+    disconnect(){this._stopHB();if(this.ws){try{this.ws.send('DISCONNECT\n\n\0');}catch(e){}this.ws.close();}this.connected=false;}
+  }
+
+  // ===== State =====
+  let stomp=null;
+  let state={connected:false,seeding:false,client:null,clientFiles:[],config:null,torrents:{},announcers:{},speeds:{},torrentUploaded:{},totalUploaded:0,history:[],pausedTorrents:{},trackerStats:{}};
+  let uploadAccumulator=null;
+  let reconnectTimer=null;
+
+  function startUploadAccumulator(){stopUploadAccumulator();uploadAccumulator=setInterval(()=>{refreshLiveDisplay();},1000);}
+  function stopUploadAccumulator(){if(uploadAccumulator){clearInterval(uploadAccumulator);uploadAccumulator=null;}}
+
+  function updateUploadDisplay(){
+    const kb=state.totalUploaded/1024; let d,u;
+    if(kb<1024){d=kb.toFixed(1);u='KB';}else if(kb<1048576){d=(kb/1024).toFixed(2);u='MB';}else{d=(kb/1048576).toFixed(2);u='GB';}
+    document.getElementById('statTotalUploaded').innerHTML=d+'<span class="stat-unit">'+u+'</span>';
+  }
+
+  function refreshLiveDisplay(){
+    let ts=0; Object.values(state.speeds).forEach(s=>ts+=s);
+    const j=1+(Math.random()-0.5)*0.04, dt=ts*j;
+    document.getElementById('statTotalSpeed').innerHTML=(dt/1024).toFixed(1)+'<span class="stat-unit">kB/s</span>';
+    const ac=Object.keys(state.announcers).length;
+    if(ac>0)document.getElementById('statSpeedDetail').textContent=(dt/1024/ac).toFixed(0)+' kB/s en moyenne par torrent';
+    document.querySelectorAll('[data-speed-hash]').forEach(el=>{
+      const sp=state.speeds[el.dataset.speedHash]||0;
+      el.textContent='\u2191 '+(sp*(1+(Math.random()-0.5)*0.04)/1024).toFixed(1)+' kB/s';
+    });
+    updateUploadDisplay();
+    document.getElementById('statTorrentDetail').textContent=Object.keys(state.torrents).length+' torrents chargés';
+    document.getElementById('statActiveTorrents').textContent=ac;
+    if (speedChart) {
+      speedChart.data.datasets[0].data.push(dt);
+      if (speedChart.data.datasets[0].data.length > MAX_HISTORY) {
+        speedChart.data.datasets[0].data.shift();
+      }
+      speedChart.data.labels.push('');
+      if (speedChart.data.labels.length > MAX_HISTORY) {
+        speedChart.data.labels.shift();
+      }
+      speedChart.update('none');
+    }
+  }
+
+  // ===== Connection =====
+  function connect(){
+    if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+    if(stomp)stomp.disconnect();
+    // Auto-detect WebSocket URL from current page location
+    const proto=location.protocol==='https:'?'wss':'ws';
+    const wsPath=location.pathname.replace(/\/ui\/?.*$/,'');
+    const url=proto+'://'+location.host+wsPath;
+    const uid=crypto.randomUUID?crypto.randomUUID():'doal-'+Date.now();
+    stomp=new StompClient(url,{'X-Joal-Username':uid});
+    stomp.onConnect=()=>{
+      state.connected=true; updateConnectionUI(); showToast('Connecté','success');
+      ['/global','/announce','/config','/torrents','/speed'].forEach(d=>{
+        stomp.subscribe(d,(msg)=>{try{handleMessage(JSON.parse(msg.body));}catch(e){console.error('Parse error on',d,e);}},  'client');
+      });
+      const initSub=stomp.subscribe('/doal/initialize-me',(msg)=>{
+        try{const ms=JSON.parse(msg.body);if(Array.isArray(ms))ms.forEach(m=>handleMessage(m));else handleMessage(ms);}catch(e){console.error('Init error',e);}
+        stomp.unsubscribe(initSub);
+      });
+    };
+    stomp.onDisconnect=()=>{state.connected=false;state.seeding=false;updateConnectionUI();showToast('Déconnecté du serveur','error');
+      addHistoryEntry('error','Déconnexion','Connexion perdue');
+      if(reconnectTimer)clearTimeout(reconnectTimer);
+      reconnectTimer=setTimeout(()=>{reconnectTimer=null;if(!state.connected)connect();},8000);
+    };
+    stomp.onError=(e)=>{showToast('Erreur: '+(typeof e==='string'?e:'Vérifiez vos paramètres'),'error');};
+    stomp.connect();
+  }
+
+  // ===== Message Handler =====
+  function handleMessage(msg){
+    if(!msg||!msg.type)return; const type=msg.type,p=msg.payload;
+    switch(type){
+      case 'CONFIG_HAS_BEEN_LOADED': case 'CONFIG_IS_IN_DIRTY_STATE':
+        state.config=p.config||p; updateConfigUI(); break;
+      case 'LIST_OF_CLIENT_FILES': state.clientFiles=p.clients||[]; updateClientSelect(); break;
+      case 'GLOBAL_SEED_STARTED': state.seeding=true; state.client=p.client; startUploadAccumulator(); updateConnectionUI();
+        // Pre-fill ONLY on fresh start (not on init replay where announcers already exist)
+        if(Object.keys(state.announcers).length===0){
+          Object.entries(state.torrents).forEach(([hash,t])=>{
+            state.announcers[hash]={infoHash:hash,torrentName:t.name,torrentSize:t.size,lastKnownSeeders:'-',lastKnownLeechers:'-',lastKnownInterval:1800,lastAnnouncedAt:null,requestEvent:'STARTED'};
+          });
+        }
+        updateDashboard();
+        addHistoryEntry('success','Seeding démarré','Client: '+p.client);
+        notifyDesktop('DOAL', 'Seeding démarré'); break;
+      case 'GLOBAL_SEED_STOPPED': state.seeding=false; state.client=null; state.announcers={}; state.speeds={};
+        stopUploadAccumulator(); updateConnectionUI(); updateDashboard();
+        addHistoryEntry('info','Seeding arrêté','Tous les torrents stoppés');
+        notifyDesktop('DOAL', 'Seeding arrêté'); break;
+      case 'TORRENT_FILE_ADDED':
+        const addKey=hashToString(p.infoHash);
+        state.torrents[addKey]={name:p.name,size:p.size,displayHash:addKey,rawHash:hashToRaw(p.infoHash)};
+        updateTorrentFileTable(); break;
+      case 'TORRENT_FILE_DELETED': delete state.torrents[hashToString(p.infoHash)]; updateTorrentFileTable(); break;
+      case 'FAILED_TO_ADD_TORRENT_FILE': showToast('Erreur: '+p.error,'error'); notifyDesktop('DOAL', 'Erreur ajout torrent'); break;
+      case 'SUCCESSFULLY_ANNOUNCE':
+        const ah=hashToString(p.infoHash); state.announcers[ah]=p; updateDashboard();
+        addHistoryEntry('success','Annonce réussie',(state.torrents[ah]?.name||ah.substring(0,12))+' S:'+p.lastKnownSeeders+' L:'+p.lastKnownLeechers); break;
+      case 'WILL_ANNOUNCE': addHistoryEntry('info','Annonce en cours...',state.torrents[hashToString(p.infoHash)]?.name||''); break;
+      case 'FAILED_TO_ANNOUNCE': addHistoryEntry('error','Échec d\'annonce',(state.torrents[hashToString(p.infoHash)]?.name||'')+' - '+p.errMessage); break;
+      case 'TOO_MANY_ANNOUNCES_FAILED': delete state.announcers[hashToString(p.infoHash)]; updateDashboard();
+        addHistoryEntry('error','Torrent retiré',state.torrents[hashToString(p.infoHash)]?.name||'');
+        notifyDesktop('DOAL', 'Torrent retiré: ' + (state.torrents[hashToString(p.infoHash)]?.name || '')); break;
+      case 'SEEDING_SPEED_HAS_CHANGED':
+        state.speeds={}; state.torrentUploaded={}; (p.speeds||[]).forEach(s=>{state.speeds[hashToString(s.infoHash)]=s.bytesPerSecond; state.torrentUploaded[hashToString(s.infoHash)]=s.uploaded||0;});
+        if(p.totalUploaded!=null&&p.totalUploaded>0)state.totalUploaded=p.totalUploaded;
+        updateDashboard(); break;
+      case 'INVALID_CONFIG': showToast('Config invalide: '+p.error,'error'); break;
+      case 'TORRENT_PAUSED': { const ph=hashToString(p.infoHash); state.pausedTorrents[ph]=true; updateTorrentSeedTable(); break; }
+      case 'TORRENT_RESUMED': { const rh=hashToString(p.infoHash); delete state.pausedTorrents[rh]; updateTorrentSeedTable(); break; }
+      case 'TRACKER_STATS':
+        state.trackerStats={};
+        (p.trackers||[]).forEach(t=>{state.trackerStats[t.domain]={totalUploaded:t.totalUploaded,torrentCount:t.torrentCount,paused:t.paused};});
+        updateTrackerStatsTable(); break;
+    }
+  }
+
+  function hashToString(h){if(!h)return '';if(typeof h==='string')return h;if(h.humanReadable)return h.humanReadable;if(h.infoHash)return h.infoHash;return JSON.stringify(h);}
+  function hashToRaw(h){if(!h)return '';if(typeof h==='string')return h;if(h.infoHash)return h.infoHash;if(h.humanReadable)return h.humanReadable;return JSON.stringify(h);}
+
+  // ===== Actions =====
+  function startSeeding(){if(stomp&&stomp.connected)stomp.send('/doal/global/start','');}
+  function stopSeeding(){if(stomp&&stomp.connected)stomp.send('/doal/global/stop','');}
+  function saveConfig(){
+    if(!stomp||!stomp.connected){showToast('Non connecté','error');return;}
+    stomp.send('/doal/config/save',JSON.stringify({
+      minUploadRate:parseInt(document.getElementById('cfgMinUpload').value)||0,
+      maxUploadRate:parseInt(document.getElementById('cfgMaxUpload').value)||0,
+      simultaneousSeed:parseInt(document.getElementById('cfgSimultaneous').value)||1,
+      client:document.getElementById('cfgClient').value,
+      keepTorrentWithZeroLeechers:document.getElementById('cfgKeepZeroLeechers').checked,
+      uploadRatioTarget:parseFloat(document.getElementById('cfgRatioTarget').value)||-1,
+      speedModel:document.getElementById('cfgSpeedModel').value,
+      announceJitterPercent:parseInt(document.getElementById('cfgJitter').value)||0,
+      peerResponseMode:document.getElementById('cfgPeerResponse').value,
+      perTorrentBandwidth:document.getElementById('cfgPerTorrent').checked,
+      minSpeedWhenNoLeechers:parseInt(document.getElementById('cfgMinNoLeechers').value)||0,
+      simulateDownload:document.getElementById('cfgSimDownload').checked,
+      enableBurstSpeed:document.getElementById('cfgBurst').checked,
+      enablePortRotation:document.getElementById('cfgPortRotation').checked,
+      rotateClientOnRestart:document.getElementById('cfgRotateClient').checked,
+      swarmAwareSpeed:document.getElementById('cfgSwarmAware').checked,
+      enableSchedule:document.getElementById('cfgEnableSchedule').checked,
+      scheduleStartHour:parseInt(document.getElementById('cfgScheduleStart').value)||22,
+      scheduleEndHour:parseInt(document.getElementById('cfgScheduleEnd').value)||7,
+      proxyEnabled:document.getElementById('cfgProxyEnabled').checked,
+      proxyType:document.getElementById('cfgProxyType').value,
+      proxyUrl:document.getElementById('cfgProxyUrl').value,
+      announceIp:document.getElementById('cfgAnnounceIp').value,
+      maxAnnounceFailures:parseInt(document.getElementById('cfgMaxFailures').value)||0
+    }));
+    showToast('Configuration sauvegardée','success');
+  }
+  function deleteTorrent(hash){if(stomp&&stomp.connected)stomp.send('/doal/torrents/delete',JSON.stringify(hash));}
+  function pauseTorrent(hash){if(stomp&&stomp.connected)stomp.send('/doal/torrents/pause',JSON.stringify({infoHash:hash}));}
+  function resumeTorrent(hash){if(stomp&&stomp.connected)stomp.send('/doal/torrents/resume',JSON.stringify({infoHash:hash}));}
+  function pauseTracker(domain){if(stomp&&stomp.connected)stomp.send('/doal/tracker/pause',JSON.stringify({tracker:domain}));}
+  function resumeTracker(domain){if(stomp&&stomp.connected)stomp.send('/doal/tracker/resume',JSON.stringify({tracker:domain}));}
+
+  // ===== File Upload =====
+  function setupDropzone(){
+    const dz=document.getElementById('dropzone'),fi=document.getElementById('fileInput');
+    dz.addEventListener('click',()=>fi.click());
+    dz.addEventListener('dragover',(e)=>{e.preventDefault();dz.classList.add('dragover');});
+    dz.addEventListener('dragleave',()=>dz.classList.remove('dragover'));
+    dz.addEventListener('drop',(e)=>{e.preventDefault();dz.classList.remove('dragover');handleFiles(e.dataTransfer.files);});
+    fi.addEventListener('change',(e)=>handleFiles(e.target.files));
+  }
+  function handleFiles(files){
+    Array.from(files).forEach(file=>{
+      if(!file.name.endsWith('.torrent')){showToast('Format invalide: '+file.name,'error');return;}
+      const r=new FileReader();
+      r.onload=(e)=>{
+        const bytes=new Uint8Array(e.target.result);let bin='';
+        for(let i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);
+        const b64=btoa(bin);
+        stomp.send('/doal/torrents/upload',JSON.stringify({fileName:file.name,b64String:b64}));
+        showToast('Torrent envoyé: '+file.name,'info');};
+      r.readAsArrayBuffer(file);
+    });
+  }
+
+  // ===== UI Updates =====
+  function updateConnectionUI(){
+    const cb=document.getElementById('connStatus'),sb=document.getElementById('seedStatus'),bs=document.getElementById('btnStart'),bp=document.getElementById('btnStop');
+    if(state.connected){cb.className='inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-500/10 text-emerald-400';cb.innerHTML='<span class="status-dot pulse"></span> <span>Connecté</span>';bs.disabled=false;}
+    else{cb.className='inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-500/10 text-red-400';cb.innerHTML='<span class="status-dot"></span> <span>Déconnecté</span>';bs.disabled=true;}
+    if(state.seeding){sb.style.display='';sb.className='inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-500/10 text-blue-400';sb.innerHTML='<span class="status-dot pulse"></span> <span>Seed actif</span>';bs.style.display='none';bp.style.display='';bp.disabled=false;
+      document.getElementById('statClient').textContent=state.client||'-';document.getElementById('statClientDetail').textContent='En cours de seeding';}
+    else{sb.style.display='none';bs.style.display='';bp.style.display='none';document.getElementById('statClient').textContent=state.config?.client||'-';document.getElementById('statClientDetail').textContent='Non démarré';}
+    lucide.createIcons();
+  }
+  function updateDashboard(){
+    let ts=0;Object.values(state.speeds).forEach(s=>ts+=s);
+    document.getElementById('statTotalSpeed').innerHTML=(ts/1024).toFixed(1)+'<span class="stat-unit">kB/s</span>';
+    const ac=Object.keys(state.announcers).length;
+    document.getElementById('statActiveTorrents').textContent=ac;
+    document.getElementById('statTorrentDetail').textContent=Object.keys(state.torrents).length+' torrents chargés';
+    if(ac>0)document.getElementById('statSpeedDetail').textContent=(ts/1024/ac).toFixed(0)+' kB/s en moyenne';
+    else document.getElementById('statSpeedDetail').textContent='Aucun seed actif';
+    updateUploadDisplay(); updateTorrentSeedTable();
+  }
+  function updateTorrentSeedTable(){
+    const tbody=document.getElementById('torrentTableBody'),anns=Object.entries(state.announcers);
+    anns.sort((a,b)=>{
+      const na=(state.torrents[a[0]]?.name||a[1].torrentName||'').toLowerCase();
+      const nb=(state.torrents[b[0]]?.name||b[1].torrentName||'').toLowerCase();
+      return na.localeCompare(nb);
+    });
+    if(anns.length===0){tbody.innerHTML='<tr><td colspan="9"><div class="text-center py-10 text-muted-foreground"><i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucun torrent en seed</p></div></td></tr>';lucide.createIcons();return;}
+    const ratioTarget=state.config?.uploadRatioTarget!=null?state.config.uploadRatioTarget:-1;
+    tbody.innerHTML=anns.map(([hash,a],idx)=>{
+      const name=state.torrents[hash]?.name||a.torrentName||hash.substring(0,20);
+      const torrentSize=a.torrentSize||state.torrents[hash]?.size||0;
+      const size=formatSize(torrentSize);
+      const sp=state.speeds[hash]||0, spStr=(sp/1024).toFixed(1);
+      const upBytes=state.torrentUploaded[hash]||0, upStr=formatSize(upBytes);
+      const se=a.lastKnownSeeders!=null?a.lastKnownSeeders:'?', le=a.lastKnownLeechers!=null?a.lastKnownLeechers:'?';
+      const interval=a.lastKnownInterval||1800, la=a.lastAnnouncedAt?formatTime(a.lastAnnouncedAt):'-';
+      let progressCell;
+      if(ratioTarget<0){
+        progressCell='<span class="text-xs text-muted-foreground">&#8734;</span>';
+      } else {
+        const target=torrentSize*ratioTarget;
+        const prog=target>0?Math.min(100,upBytes/target*100):0;
+        progressCell='<div class="progress-bar"><div class="progress-fill" style="width:'+Math.min(100,Math.max(0,prog))+'%"></div></div>';
+      }
+      const paused=!!state.pausedTorrents[hash];
+      const actionIcon=paused?'play':'pause';
+      return `<tr class="hover:bg-accent/30 transition"><td class="px-4 py-2.5 text-sm font-medium max-w-[300px] truncate">${escapeHtml(name)}</td><td class="px-4 py-2.5 text-xs text-muted-foreground">${size}</td>
+        <td class="px-4 py-2.5"><span class="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400" data-speed-hash="${escapeHtml(hash)}">\u2191 ${escapeHtml(spStr)} kB/s</span></td>
+        <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(upStr)}</td>
+        <td class="px-4 py-2.5"><span class="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-400">S ${escapeHtml(String(se))}</span></td>
+        <td class="px-4 py-2.5"><span class="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-400">L ${escapeHtml(String(le))}</span></td>
+        <td class="px-4 py-2.5">${progressCell}</td>
+        <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(String(la))}</td>
+        <td class="px-4 py-2.5"><button class="btn-pause-torrent inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition" data-idx="${idx}"><i data-lucide="${actionIcon}" class="w-3.5 h-3.5"></i></button></td></tr>`;
+    }).join('');
+    const annEntries=anns;
+    tbody.querySelectorAll('.btn-pause-torrent').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const i=parseInt(btn.dataset.idx);
+        const [hash]=annEntries[i];
+        if(state.pausedTorrents[hash])resumeTorrent(hash);else pauseTorrent(hash);
+      });
+    });
+    lucide.createIcons();
+  }
+  function updateTrackerStatsTable(){
+    const tbody=document.getElementById('trackerStatsBody');
+    const entries=Object.entries(state.trackerStats);
+    if(entries.length===0){tbody.innerHTML='<tr><td colspan="4"><div class="text-center py-8 text-muted-foreground"><i data-lucide="bar-chart-2" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucune donnée tracker</p></div></td></tr>';lucide.createIcons();return;}
+    const trackerEntries=entries;
+    tbody.innerHTML=entries.map(([domain,stats],idx)=>{
+      const totalUp=formatSize(stats.totalUploaded||0);
+      const count=stats.torrentCount||stats.torrents||0;
+      const paused=!!stats.paused;
+      const actionLabel=paused?'Reprendre':'Suspendre';
+      const actionIcon=paused?'play':'pause';
+      return `<tr class="hover:bg-accent/30 transition">
+        <td class="px-4 py-2.5 text-xs font-medium">${escapeHtml(domain)}</td>
+        <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(totalUp)}</td>
+        <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(String(count))}</td>
+        <td class="px-4 py-2.5"><button class="btn-pause-tracker inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition" data-idx="${idx}"><i data-lucide="${actionIcon}" class="w-3 h-3"></i>${escapeHtml(actionLabel)}</button></td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('.btn-pause-tracker').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const i=parseInt(btn.dataset.idx);
+        const [domain,stats]=trackerEntries[i];
+        if(stats.paused)resumeTracker(domain);else pauseTracker(domain);
+      });
+    });
+    lucide.createIcons();
+  }
+  function updateTorrentFileTable(){
+    const tbody=document.getElementById('torrentFileTableBody'),ts=Object.entries(state.torrents);
+    ts.sort((a,b)=>((a[1].name||'').toLowerCase().localeCompare((b[1].name||'').toLowerCase())));
+    if(ts.length===0){tbody.innerHTML='<tr><td colspan="3"><div class="text-center py-8 text-muted-foreground"><i data-lucide="folder" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucun torrent chargé</p></div></td></tr>';lucide.createIcons();return;}
+    const torrentEntries=ts;
+    tbody.innerHTML=ts.map(([hash,t],idx)=>`<tr class="hover:bg-accent/30 transition"><td class="px-4 py-2.5 text-sm max-w-[400px] truncate">${escapeHtml(t.name)}</td><td class="px-4 py-2.5 text-xs text-muted-foreground">${formatSize(t.size)}</td>
+      <td class="px-4 py-2.5"><button class="btn-del-torrent inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-red-400 hover:border-red-400/50 transition" data-idx="${idx}"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></td></tr>`).join('');
+    tbody.querySelectorAll('.btn-del-torrent').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const i=parseInt(btn.dataset.idx);
+        const [key,t]=torrentEntries[i];
+        deleteTorrent(t.rawHash||key);
+      });
+    });
+    lucide.createIcons();
+  }
+  function updateConfigUI(){
+    const c=state.config;if(!c)return;
+    document.getElementById('cfgMinUpload').value=c.minUploadRate;document.getElementById('cfgMaxUpload').value=c.maxUploadRate;
+    document.getElementById('cfgSimultaneous').value=c.simultaneousSeed;document.getElementById('cfgRatioTarget').value=c.uploadRatioTarget;
+    document.getElementById('cfgMinNoLeechers').value=c.minSpeedWhenNoLeechers||0;document.getElementById('cfgSpeedModel').value=c.speedModel||'UNIFORM';
+    document.getElementById('cfgJitter').value=c.announceJitterPercent||0;document.getElementById('cfgPeerResponse').value=c.peerResponseMode||'NONE';
+    document.getElementById('cfgPerTorrent').checked=c.perTorrentBandwidth||false;document.getElementById('cfgBurst').checked=c.enableBurstSpeed||false;
+    document.getElementById('cfgSimDownload').checked=c.simulateDownload||false;document.getElementById('cfgPortRotation').checked=c.enablePortRotation||false;
+    document.getElementById('cfgKeepZeroLeechers').checked=c.keepTorrentWithZeroLeechers||false;
+    document.getElementById('cfgRotateClient').checked=c.rotateClientOnRestart||false;document.getElementById('cfgSwarmAware').checked=c.swarmAwareSpeed||false;
+    document.getElementById('cfgEnableSchedule').checked=c.enableSchedule||false;document.getElementById('cfgScheduleStart').value=c.scheduleStartHour!=null?c.scheduleStartHour:22;document.getElementById('cfgScheduleEnd').value=c.scheduleEndHour!=null?c.scheduleEndHour:7;
+    document.getElementById('cfgProxyEnabled').checked=c.proxyEnabled||false;
+    document.getElementById('cfgProxyType').value=c.proxyType||'socks5';
+    document.getElementById('cfgProxyUrl').value=c.proxyUrl||'';
+    document.getElementById('cfgAnnounceIp').value=c.announceIp||'';
+    document.getElementById('cfgMaxFailures').value=c.maxAnnounceFailures!=null?c.maxAnnounceFailures:5;
+    if(c.client){const sel=document.getElementById('cfgClient');if(sel.querySelector('option[value="'+c.client+'"]'))sel.value=c.client;}
+  }
+  function updateClientSelect(){
+    const sel=document.getElementById('cfgClient'),cur=sel.value;
+    sel.innerHTML=state.clientFiles.map(f=>'<option value="'+escapeHtml(f)+'">'+escapeHtml(f.replace('.client',''))+'</option>').join('');
+    if(cur&&sel.querySelector('option[value="'+cur+'"]'))sel.value=cur;else if(state.config?.client)sel.value=state.config.client;
+  }
+
+  // ===== History =====
+  function addHistoryEntry(level,title,detail){
+    const time=new Date().toLocaleTimeString('fr-FR');
+    const icons={success:'check-circle',error:'x-circle',info:'info',warning:'alert-triangle'};
+    const colors={success:'border-l-emerald-500 bg-emerald-500/5',error:'border-l-red-500 bg-red-500/5',info:'border-l-blue-500 bg-blue-500/5',warning:'border-l-amber-500 bg-amber-500/5'};
+    const iconColors={success:'text-emerald-500',error:'text-red-500',info:'text-blue-500',warning:'text-amber-500'};
+    const c=document.getElementById('historyLog');if(c.querySelector('.empty-state'))c.innerHTML='';
+    const e=document.createElement('div');e.className='flex items-start gap-3 rounded-lg border border-border/50 border-l-[3px] '+colors[level]+' px-4 py-3 text-sm transition-all hover:border-border';
+    e.innerHTML=`<i data-lucide="${icons[level]||'info'}" class="w-4 h-4 mt-0.5 shrink-0 ${iconColors[level]||'text-muted-foreground'}"></i><span class="text-[11px] text-muted-foreground font-mono whitespace-nowrap mt-0.5 tabular-nums">${time}</span><div class="flex-1 min-w-0"><p class="font-medium text-sm">${escapeHtml(title)}</p><p class="text-xs text-muted-foreground mt-0.5 truncate">${escapeHtml(detail||'')}</p></div>`;
+    c.insertBefore(e,c.firstChild);while(c.children.length>50)c.removeChild(c.lastChild);lucide.createIcons();
+    try{sessionStorage.setItem('doalHistory',c.innerHTML);}catch(ex){sessionStorage.removeItem('doalHistory');}
+  }
+  function clearHistory(){document.getElementById('historyLog').innerHTML='<div class="text-center py-10 text-muted-foreground empty-state"><i data-lucide="scroll-text" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Historique effacé</p></div>';lucide.createIcons();sessionStorage.removeItem('doalHistory');}
+
+  // ===== Navigation =====
+  document.querySelectorAll('.nav-tab').forEach(tab=>{tab.addEventListener('click',()=>{
+    document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
+  });});
+
+  // ===== Toast & Modal =====
+  function showToast(msg,type){const c=document.getElementById('toastContainer'),t=document.createElement('div');t.className='toast '+(type||'info');t.textContent=msg;c.appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),300);},4000);}
+  // Connection modal removed — auto-connect
+
+  // ===== Helpers =====
+  function formatSize(b){if(!b)return '0 B';const u=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(1024));return(b/Math.pow(1024,i)).toFixed(i===0?0:1)+' '+u[i];}
+  function formatTime(dt){if(!dt)return '-';try{const d=new Date(dt);return isNaN(d.getTime())?dt:d.toLocaleTimeString('fr-FR');}catch(e){return dt;}}
+  function escapeHtml(s){if(!s)return '';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
+
+  // ===== Speed Chart =====
+  let speedChart = null;
+  const speedHistory = [];
+  const MAX_HISTORY = 60;
+
+  function initSpeedChart() {
+    const ctx = document.getElementById('speedChart').getContext('2d');
+    speedChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: Array(MAX_HISTORY).fill(''),
+        datasets: [{
+          data: Array(MAX_HISTORY).fill(0),
+          borderColor: 'rgb(16, 185, 129)',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          borderWidth: 1.5,
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { display: false },
+          y: {
+            display: true,
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            ticks: { color: 'rgba(255,255,255,0.3)', font: { size: 10 }, callback: v => (v/1024).toFixed(0) + ' kB/s' }
+          }
+        },
+        animation: { duration: 300 }
+      }
+    });
+  }
+
+  // ===== Theme Toggle =====
+  function toggleTheme() {
+    document.documentElement.classList.toggle('dark');
+    const isDark = document.documentElement.classList.contains('dark');
+    localStorage.setItem('doalTheme', isDark ? 'dark' : 'light');
+    document.getElementById('themeBtn').innerHTML = isDark ? '<i data-lucide="moon" class="w-3.5 h-3.5"></i>' : '<i data-lucide="sun" class="w-3.5 h-3.5"></i>';
+    lucide.createIcons();
+  }
+
+  // ===== Desktop Notifications =====
+  function notifyDesktop(title, body) {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body, icon: './favicon.ico' });
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission().then(p => {
+        if (p === 'granted') new Notification(title, { body, icon: './favicon.ico' });
+      });
+    }
+  }
+
+  // ===== Init =====
+  window.addEventListener('DOMContentLoaded',()=>{
+    lucide.createIcons(); setupDropzone();
+    initSpeedChart();
+    const savedTheme = localStorage.getItem('doalTheme');
+    if (savedTheme === 'light') { document.documentElement.classList.remove('dark'); }
+    const savedHistory=sessionStorage.getItem('doalHistory');
+    if(savedHistory){document.getElementById('historyLog').innerHTML=savedHistory;lucide.createIcons();}
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    // Auto-connect to the same server that serves this page
+    connect();
+  });
+  </script>
+</body>
+</html>
