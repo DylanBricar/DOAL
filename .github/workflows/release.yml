@@ -90,7 +90,7 @@ jobs:
               else if (!/^[Mm]erge/.test(msg)) groups['Other'].push(msg);
             }
             let body = `## DOAL v${version}\n\nBitTorrent fake-seeding tool with 18 anti-detection features.\n\n`;
-            body += `### Quick Start\n\`\`\`bash\n./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x\n\`\`\`\nThen open http://localhost:5082/\n\n`;
+            body += `### Quick Start\n    ./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x\nThen open http://localhost:5082/\n\n`;
             for (const [title, items] of Object.entries(groups)) {
               if (!items.length) continue;
               body += `### ${title}\n`;
@@ -103,13 +103,15 @@ jobs:
       - name: Create Draft Release
         id: create-release
         uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ steps.changelog.outputs.result }}
         with:
           script: |
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner, repo: context.repo.repo,
               tag_name: `v${{ steps.get-version.outputs.version }}`,
               name: `DOAL v${{ steps.get-version.outputs.version }}`,
-              body: `${{ steps.changelog.outputs.result }}`,
+              body: process.env.RELEASE_BODY || '',
               draft: true, prerelease: false, target_commitish: 'main'
             });
             return data.id;
