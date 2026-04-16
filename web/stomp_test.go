@@ -178,10 +178,3 @@ func TestParseFrameRoundTrip(t *testing.T) {
 		t.Errorf("body: want %q, got %q", body, frame.body)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

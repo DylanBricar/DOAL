@@ -146,7 +146,7 @@ func (c *ClientConfig) BuildAnnounceURL(announceURL string, params AnnounceParam
 	}
 
 	infoHashEncoded := encodeBytesRE(params.InfoHash[:], c.exclusionRE, c.urlEncoder.EncodedHexCase)
-	peerIDEncoded := encodePeerID(c.PeerID, c.peerIDGen, c.urlEncoder)
+	peerIDEncoded := encodePeerID(c.PeerID, c.peerIDGen, c.exclusionRE, c.urlEncoder.EncodedHexCase)
 
 	query := c.Query
 	query = strings.ReplaceAll(query, "{infohash}", infoHashEncoded)
@@ -410,23 +410,18 @@ func encodeBytesRE(b []byte, exclusion *regexp.Regexp, hexCase string) string {
 	return sb.String()
 }
 
-// encodeBytes percent-encodes a byte slice, skipping bytes matching the
-// exclusion pattern from the client's urlEncoder config.
-func encodeBytes(b []byte, enc urlEncoderConfig) string {
-	return encodeBytesRE(b, compileExclusion(enc.EncodingExclusionPattern), enc.EncodedHexCase)
-}
-
-// encodePeerID percent-encodes the peer ID string using the client URL encoder
-// when shouldUrlEncode is true, otherwise returns it raw.
-func encodePeerID(peerID string, gen peerIDGeneratorConfig, enc urlEncoderConfig) string {
+// encodePeerID percent-encodes the peer ID string using the pre-compiled exclusion
+// regex when shouldUrlEncode is true, otherwise URL-query-escapes it.
+// Using the pre-compiled exclusionRE avoids recompiling the pattern on every announce.
+func encodePeerID(peerID string, gen peerIDGeneratorConfig, exclusionRE *regexp.Regexp, hexCase string) string {
 	if gen.ShouldURLEncode {
-		return encodeBytes([]byte(peerID), enc)
+		return encodeBytesRE([]byte(peerID), exclusionRE, hexCase)
 	}
 	return url.QueryEscape(peerID)
 }
 
-// compileExclusion compiles the exclusion regex, caching nothing (called once
-// per announce). Returns nil on error.
+// compileExclusion compiles the exclusion regex once at load time.
+// Returns nil on empty pattern or compile error.
 func compileExclusion(pattern string) *regexp.Regexp {
 	if pattern == "" {
 		return nil

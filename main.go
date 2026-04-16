@@ -156,10 +156,12 @@ func (e *Engine) Start() error {
 	// Auto-detect public IP if not configured
 	if cfg.AnnounceIP == "" {
 		if ip := fetchPublicIP(); ip != "" {
-			fmt.Printf("engine: public IP detected: %s\n", ip)
+			ip = strings.TrimSpace(ip)
+			cfg.AnnounceIP = ip
+			slog.Info("public IP auto-detected", "ip", ip)
 		}
 	} else {
-		fmt.Printf("engine: using configured IP: %s\n", cfg.AnnounceIP)
+		slog.Info("using configured announce IP", "ip", cfg.AnnounceIP)
 	}
 
 	// Pick a random listen port in the range typical for qBittorrent / uTorrent.
@@ -174,7 +176,7 @@ func (e *Engine) Start() error {
 	// Start announce scheduler
 	e.scheduler = announce.NewScheduler(listenPort, cfg.AnnounceJitterPercent, cc, cfg, proxyURL,
 		func(infoHashHex string, resp *announce.AnnounceResponse) {
-			fmt.Printf("announce: %s OK - S:%d L:%d interval:%ds\n", infoHashHex[:12], resp.Seeders, resp.Leechers, resp.Interval)
+			slog.Info("announce ok", "hash", infoHashHex[:12], "seeders", resp.Seeders, "leechers", resp.Leechers, "interval", resp.Interval)
 			e.dispatcher.UpdatePeers(infoHashHex, resp.Seeders, resp.Leechers)
 			now := time.Now().Format(time.RFC3339)
 			// Find the torrent, store state, broadcast to UI
@@ -199,11 +201,11 @@ func (e *Engine) Start() error {
 			}
 		},
 		func(infoHashHex string, err error) {
-			fmt.Printf("announce: %s FAIL - %v\n", infoHashHex[:12], err)
+			slog.Warn("announce failed", "hash", infoHashHex[:12], "err", err)
 			e.handlers.BroadcastAnnounceFailed(infoHashHex, err.Error())
 		},
 		func(infoHashHex string) {
-			fmt.Printf("announce: %s removed — too many consecutive failures\n", infoHashHex[:12])
+			slog.Warn("too many announce failures, removed", "hash", infoHashHex[:12])
 			e.handlers.BroadcastTooManyFails(infoHashHex)
 			e.mu.RLock()
 			disp := e.dispatcher
@@ -262,7 +264,7 @@ func (e *Engine) Start() error {
 				case <-time.After(delay):
 					newPort := 10000 + rand.Intn(50000)
 					e.scheduler.SetPort(newPort)
-					fmt.Printf("engine: port rotated to %d\n", newPort)
+					slog.Info("port rotated", "port", newPort)
 				}
 			}
 		}()
@@ -296,8 +298,7 @@ func (e *Engine) Start() error {
 				info, _ := entry.Info()
 				if info != nil && info.Size() == t.Size {
 					e.peerWire.RegisterDataFile(t.InfoHashHex, dataPath, t.PieceLength)
-					fmt.Printf("engine: SHA-1 data registered: %s -> %s (%d pieces)\n",
-						t.Name, entry.Name(), t.PieceCount)
+					slog.Info("SHA-1 data registered", "torrent", t.Name, "file", entry.Name(), "pieces", t.PieceCount)
 				}
 				break
 			}
@@ -305,7 +306,7 @@ func (e *Engine) Start() error {
 	}
 	go func() {
 		if err := e.peerWire.Start(); err != nil {
-			fmt.Printf("engine: peerwire start: %v\n", err)
+			slog.Error("peerwire start", "err", err)
 		}
 	}()
 
@@ -316,16 +317,16 @@ func (e *Engine) Start() error {
 			e.dhtNode.AddTorrent(t.InfoHashHex)
 		}
 		if err := e.dhtNode.Start(); err != nil {
-			fmt.Printf("engine: DHT start failed (non-fatal): %v\n", err)
+			slog.Warn("DHT start failed (non-fatal)", "err", err)
 			e.dhtNode = nil
 		} else {
-			fmt.Printf("engine: DHT node started on port %d\n", listenPort+1)
+			slog.Info("DHT node started", "port", listenPort+1)
 		}
 	}
 
 	e.announceStates = make(map[string]*web.AnnounceState)
 	e.seeding = true
-	fmt.Printf("engine: seeding started (%d torrents, client=%s)\n", len(torrents), cfg.Client)
+	slog.Info("seeding started", "torrents", len(torrents), "client", cfg.Client)
 	return nil
 }
 
@@ -461,7 +462,7 @@ func (e *Engine) Stop() {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			fmt.Println("engine: stopped announce timeout, continuing shutdown")
+			slog.Warn("stopped announce timeout, continuing shutdown")
 		}
 	}
 
@@ -493,7 +494,7 @@ func (e *Engine) Stop() {
 	e.announceStates = nil
 	e.announceStatesMu.Unlock()
 
-	fmt.Println("engine: seeding stopped")
+	slog.Info("seeding stopped")
 }
 
 // rotateTorrents swaps one active torrent for one inactive torrent to ensure
@@ -538,7 +539,7 @@ func (e *Engine) rotateTorrents() {
 		disp.RegisterTorrent(addTorrent.InfoHashHex, addTorrent.Size)
 	}
 
-	fmt.Printf("engine: rotated torrents — removed %s, added %s\n", removeHash[:12], addTorrent.InfoHashHex[:12])
+	slog.Info("torrent rotated", "removed", removeHash[:12], "added", addTorrent.InfoHashHex[:12])
 }
 
 // SaveConfig validates and persists cfg, then updates the engine's active config.
@@ -574,7 +575,7 @@ func (e *Engine) GetConfig() *config.Config {
 func (e *Engine) GetClientFiles() []string {
 	entries, err := os.ReadDir(e.clientsDir)
 	if err != nil {
-		fmt.Printf("engine: reading clients dir %q: %v\n", e.clientsDir, err)
+		slog.Error("reading clients dir", "dir", e.clientsDir, "err", err)
 		return nil
 	}
 

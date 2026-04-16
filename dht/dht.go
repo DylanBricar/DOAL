@@ -1,8 +1,10 @@
 package dht
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -113,30 +115,52 @@ func (n *Node) handleMessage(data []byte, addr *net.UDPAddr) {
 	}
 }
 
-// replyPing sends a BEP 5 ping response.
-func (n *Node) replyPing(addr *net.UDPAddr, txID string) {
-	// d1:rd2:id20:<nodeID>e1:t<len>:<txID>1:y1:re
-	resp := fmt.Sprintf("d1:rd2:id20:%s e1:t%d:%s1:y1:re",
-		string(n.id[:]), len(txID), txID)
-	n.send(addr, []byte(resp))
+// buildBencodeReply constructs a BEP 5 reply dictionary as a byte slice.
+// The innerDict bytes are placed inside the "r" reply dict, and txID is the
+// raw transaction ID bytes. Binary values are concatenated directly to avoid
+// fmt.Sprintf misinterpreting binary bytes (e.g. node IDs containing '%').
+func buildBencodeReply(innerDict []byte, txID string) []byte {
+	var b bytes.Buffer
+	b.WriteString("d1:r")
+	b.Write(innerDict)
+	// Transaction ID: "1:t<len>:<bytes>"
+	b.WriteString(fmt.Sprintf("1:t%d:", len(txID)))
+	b.WriteString(txID)
+	b.WriteString("1:y1:re")
+	return b.Bytes()
 }
 
-// replyFindNode sends a BEP 5 find_node response with our own node compact info.
+// replyPing sends a BEP 5 ping response.
+func (n *Node) replyPing(addr *net.UDPAddr, txID string) {
+	// inner: d2:id20:<nodeID>e
+	var inner bytes.Buffer
+	inner.WriteString("d2:id20:")
+	inner.Write(n.id[:])
+	inner.WriteByte('e')
+	n.send(addr, buildBencodeReply(inner.Bytes(), txID))
+}
+
+// replyFindNode sends a BEP 5 find_node response with an empty nodes list.
 func (n *Node) replyFindNode(addr *net.UDPAddr, txID string) {
-	// nodes value: 26 bytes per node = 20 (id) + 4 (ip) + 2 (port), empty here
-	resp := fmt.Sprintf("d1:rd2:id20:%s 5:nodes0:e1:t%d:%s1:y1:re",
-		string(n.id[:]), len(txID), txID)
-	n.send(addr, []byte(resp))
+	// inner: d2:id20:<nodeID>5:nodes0:e
+	var inner bytes.Buffer
+	inner.WriteString("d2:id20:")
+	inner.Write(n.id[:])
+	inner.WriteString("5:nodes0:e")
+	n.send(addr, buildBencodeReply(inner.Bytes(), txID))
 }
 
 // replyGetPeers sends a BEP 5 get_peers response.
 // We return an empty peers list but a valid token so announce_peer works.
 func (n *Node) replyGetPeers(addr *net.UDPAddr, txID string) {
 	// token is an arbitrary 4-byte value; use first 4 bytes of our node id.
-	token := string(n.id[:4])
-	resp := fmt.Sprintf("d1:rd2:id20:%s 5:token4:%s6:valuesl ee1:t%d:%s1:y1:re",
-		string(n.id[:]), token, len(txID), txID)
-	n.send(addr, []byte(resp))
+	var inner bytes.Buffer
+	inner.WriteString("d2:id20:")
+	inner.Write(n.id[:])
+	inner.WriteString("5:token4:")
+	inner.Write(n.id[:4])
+	inner.WriteString("6:valuesl ee")
+	n.send(addr, buildBencodeReply(inner.Bytes(), txID))
 }
 
 // send writes a UDP datagram to addr, logging failures non-fatally.
@@ -146,7 +170,7 @@ func (n *Node) send(addr *net.UDPAddr, data []byte) {
 	}
 	n.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := n.conn.WriteToUDP(data, addr); err != nil {
-		fmt.Printf("dht: send to %s: %v\n", addr, err)
+		slog.Warn("dht: send failed", "addr", addr, "err", err)
 	}
 }
 

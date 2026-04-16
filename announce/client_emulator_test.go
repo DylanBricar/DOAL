@@ -205,8 +205,8 @@ func TestGenerateKey_HashNoLeadingZero(t *testing.T) {
 
 // TestEncodeBytes verifies percent-encoding with no exclusions produces all %xx.
 func TestEncodeBytes(t *testing.T) {
-	enc := urlEncoderConfig{EncodingExclusionPattern: "", EncodedHexCase: "lower"}
-	result := encodeBytes([]byte{0x01, 0x0f, 0xff}, enc)
+
+	result := encodeBytesRE([]byte{0x01, 0x0f, 0xff}, nil, "lower")
 	if !strings.Contains(result, "%01") {
 		t.Errorf("expected %%01 in %q", result)
 	}
@@ -220,8 +220,8 @@ func TestEncodeBytes(t *testing.T) {
 
 // TestEncodeBytes_UpperCase verifies upper-case percent-encoding.
 func TestEncodeBytes_UpperCase(t *testing.T) {
-	enc := urlEncoderConfig{EncodingExclusionPattern: "", EncodedHexCase: "upper"}
-	result := encodeBytes([]byte{0xab}, enc)
+
+	result := encodeBytesRE([]byte{0xab}, nil, "upper")
 	if !strings.Contains(result, "%AB") {
 		t.Errorf("expected %%AB in %q", result)
 	}
