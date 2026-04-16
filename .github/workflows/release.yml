@@ -1,62 +1,118 @@
-name: Release
+name: "Release"
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
+  test:
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Get version
-        id: version
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-go@v5
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          release_name: DOAL ${{ steps.version.outputs.version }}
-          body: |
-            ## DOAL ${{ steps.version.outputs.version }}
+          go-version: '1.23'
+      - run: go vet ./...
+      - run: go test ./... -count=1 -timeout=120s
 
-            BitTorrent fake-seeding tool with 16 anti-detection features.
+  create-release:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.create-release.outputs.result }}
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-            ### Installation
-            Download the binary for your platform and run:
-            ```bash
-            ./doal --conf=. --port=5082 --path-prefix=doal --secret-token=your-token
-            ```
-            Then open `http://localhost:5082/doal/ui/`
+      - name: Compute next version
+        id: get-version
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            const tags = releases
+              .map(r => r.tag_name)
+              .filter(t => /^v\d+\.\d+\.\d+$/.test(t))
+              .sort((a, b) => {
+                const pa = a.slice(1).split('.').map(Number);
+                const pb = b.slice(1).split('.').map(Number);
+                return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
+              });
+            let next;
+            if (tags.length === 0) {
+              next = '1.0.0';
+            } else {
+              const latest = tags[tags.length - 1].slice(1).split('.').map(Number);
+              latest[2] += 1;
+              next = latest.join('.');
+            }
+            core.setOutput('version', next);
+            return next;
 
-            ### Features
-            - 90+ client profiles (qBittorrent, uTorrent, Transmission, Deluge...)
-            - Organic speed model with warmup, burst, jitter
-            - uTLS fingerprint spoofing (JA3)
-            - PeerWire protocol (BEP 10, keep-alive, bitfield)
-            - SHA-1 verified piece serving (optional)
-            - Schedule, port rotation, swarm-aware speed
-            - Modern web UI (Tailwind, Chart.js, dark/light mode)
-          draft: false
-          prerelease: false
+      - name: Generate changelog
+        id: changelog
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const version = '${{ steps.get-version.outputs.version }}';
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 5
+            });
+            const prevTag = releases.find(r => !r.draft)?.tag_name || '';
+            let commits = [];
+            if (prevTag) {
+              try {
+                const { data: comp } = await github.rest.repos.compareCommits({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  base: prevTag, head: 'main'
+                });
+                commits = comp.commits.map(c => c.commit.message.split('\n')[0]);
+              } catch (e) {}
+            }
+            const groups = { 'Features': [], 'Bug Fixes': [], 'Improvements': [], 'Other': [] };
+            for (const msg of commits) {
+              if (msg.startsWith('feat')) groups['Features'].push(msg);
+              else if (msg.startsWith('fix')) groups['Bug Fixes'].push(msg);
+              else if (/^(refactor|perf|chore)/.test(msg)) groups['Improvements'].push(msg);
+              else if (!/^[Mm]erge/.test(msg)) groups['Other'].push(msg);
+            }
+            let body = `## DOAL v${version}\n\nBitTorrent fake-seeding tool with 18 anti-detection features.\n\n`;
+            body += `### Quick Start\n\`\`\`bash\n./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x\n\`\`\`\nThen open http://localhost:5082/\n\n`;
+            for (const [title, items] of Object.entries(groups)) {
+              if (!items.length) continue;
+              body += `### ${title}\n`;
+              for (const item of items) body += `- ${item.replace(/^(feat|fix|refactor|perf|chore)(\(.*?\))?:\s*/, '')}\n`;
+              body += '\n';
+            }
+            if (prevTag) body += `**Full Changelog**: https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${prevTag}...v${version}\n`;
+            return body;
+
+      - name: Create Draft Release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag_name: `v${{ steps.get-version.outputs.version }}`,
+              name: `DOAL v${{ steps.get-version.outputs.version }}`,
+              body: `${{ steps.changelog.outputs.result }}`,
+              draft: true, prerelease: false, target_commitish: 'main'
+            });
+            return data.id;
 
   build:
     needs: create-release
@@ -67,40 +123,34 @@ jobs:
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
-            ext: ""
             name: doal-linux-amd64
           - os: ubuntu-latest
             goos: linux
             goarch: arm64
-            ext: ""
             name: doal-linux-arm64
           - os: macos-latest
             goos: darwin
             goarch: amd64
-            ext: ""
             name: doal-macos-amd64
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            ext: ""
             name: doal-macos-arm64
           - os: windows-latest
             goos: windows
             goarch: amd64
-            ext: ".exe"
             name: doal-windows-amd64
+            ext: .exe
           - os: windows-latest
             goos: windows
             goarch: arm64
-            ext: ".exe"
             name: doal-windows-arm64
+            ext: .exe
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
 
@@ -109,15 +159,30 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: |
-          go build -ldflags="-s -w" -o ${{ matrix.name }}${{ matrix.ext }} .
+        run: go build -ldflags="-s -w" -o ${{ matrix.name }}${{ matrix.ext }} .
 
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload asset
+        uses: actions/github-script@v7
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.name }}${{ matrix.ext }}
-          asset_name: ${{ matrix.name }}${{ matrix.ext }}
-          asset_content_type: application/octet-stream
+          script: |
+            const fs = require('fs');
+            const name = '${{ matrix.name }}${{ matrix.ext }}';
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release-id }},
+              name: name, data: fs.readFileSync(name)
+            });
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release-id }},
+              draft: false
+            });

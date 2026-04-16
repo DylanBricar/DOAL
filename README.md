@@ -30,10 +30,10 @@ Requires Go 1.23+.
 ## Usage
 
 ```bash
-./doal --conf=. --port=5082 --path-prefix=doal --secret-token=your-secret
+./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x
 ```
 
-Then open **http://localhost:5082/doal/ui/**
+Then open **http://localhost:5082/** (auto-redirects to the UI)
 
 ### CLI flags
 
@@ -42,7 +42,7 @@ Then open **http://localhost:5082/doal/ui/**
 | `--conf` | (required) | Path to config directory (contains `config.json`, `clients/`, `torrents/`) |
 | `--port` | `5081` | Web server port |
 | `--path-prefix` | `doal` | URL prefix (UI at `/{prefix}/ui/`) |
-| `--secret-token` | (required) | Auth token for WebSocket (use `x` to disable) |
+| `--secret-token` | `x` | Auth token for WebSocket. Use `x` to disable authentication (default). Set a real token to require auth. |
 
 ### Directory structure
 
@@ -144,7 +144,7 @@ Modern dark-themed dashboard built with Tailwind CSS, Chart.js, and Lucide icons
 - **Drag & drop torrent upload**
 - **Dark/Light mode toggle**
 - **Desktop notifications**
-- **Auto-connect** (no login modal needed with `--secret-token=x`)
+- **Auto-connect** (no login required by default)
 - **Persistent history** across page refreshes (sessionStorage)
 
 ---
