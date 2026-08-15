@@ -1,6 +1,7 @@
 package announce
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,5 +258,93 @@ func TestExpandCharClass(t *testing.T) {
 	chars = expandCharClass("0-9")
 	if len(chars) != 10 {
 		t.Errorf("0-9 should expand to 10 chars, got %d", len(chars))
+	}
+}
+
+func TestGeneratePeerIDPreservesBinaryRegexLiterals(t *testing.T) {
+	t.Parallel()
+
+	pattern := "-UT354S-(\u00d2)(\u00ad)[\u0001-\u00ff]{10}"
+	peerID, err := generatePeerIDFromRegex(pattern)
+	if err != nil {
+		t.Fatalf("generatePeerIDFromRegex: %v", err)
+	}
+	if len(peerID) != 20 {
+		t.Fatalf("peer ID length = %d, want 20", len(peerID))
+	}
+	wantPrefix := append([]byte("-UT354S-"), 0xd2, 0xad)
+	if !bytes.Equal([]byte(peerID[:10]), wantPrefix) {
+		t.Fatalf("peer ID prefix = %x, want %x", []byte(peerID[:10]), wantPrefix)
+	}
+	for i, b := range []byte(peerID[10:]) {
+		if b == 0 {
+			t.Fatalf("random byte %d is zero, but pattern requires [1-255]", i)
+		}
+	}
+}
+
+func TestGenerateRandomPoolPeerIDHasTransmissionChecksum(t *testing.T) {
+	t.Parallel()
+
+	const pool = "0123456789abcdefghijklmnopqrstuvwxyz"
+	cfg := peerIDGeneratorConfig{Algorithm: peerIDAlgorithmConfig{
+		Type:           "RANDOM_POOL_WITH_CHECKSUM",
+		Prefix:         "-TR3000-",
+		CharactersPool: pool,
+		Base:           36,
+	}}
+	peerID, err := generatePeerID(cfg)
+	if err != nil {
+		t.Fatalf("generatePeerID: %v", err)
+	}
+	if len(peerID) != 20 || !strings.HasPrefix(peerID, "-TR3000-") {
+		t.Fatalf("unexpected Transmission peer ID %q", peerID)
+	}
+
+	total := 0
+	for _, char := range peerID[len("-TR3000-"):] {
+		idx := strings.IndexRune(pool, char)
+		if idx < 0 {
+			t.Fatalf("character %q is outside pool", char)
+		}
+		total += idx
+	}
+	if total%36 != 0 {
+		t.Fatalf("Transmission suffix checksum = %d mod 36, want 0", total%36)
+	}
+}
+
+func TestCloneWithFreshIdentityPreservesProfile(t *testing.T) {
+	t.Parallel()
+
+	original := &ClientConfig{
+		Query:          "info_hash={infohash}&peer_id={peerid}&key={key}",
+		Numwant:        80,
+		NumwantOnStop:  0,
+		RequestHeaders: []Header{{Name: "User-Agent", Value: "qBittorrent/5.0.0"}},
+		PeerID:         "-qB5000-aaaaaaaaaaaa",
+		Key:            "12345678",
+		UserAgent:      "qBittorrent/5.0.0",
+		keyGen: keyGeneratorConfig{Algorithm: keyAlgorithmConfig{
+			Type: "HASH", Length: 8,
+		}},
+		peerIDGen: peerIDGeneratorConfig{Algorithm: peerIDAlgorithmConfig{
+			Type: "REGEX", Pattern: "-qB5000-[A-Za-z0-9_~()!.*-]{12}",
+		}},
+	}
+
+	clone, err := original.CloneWithFreshIdentity()
+	if err != nil {
+		t.Fatalf("CloneWithFreshIdentity: %v", err)
+	}
+	if clone.PeerID == original.PeerID || clone.Key == original.Key {
+		t.Fatalf("clone did not receive a fresh identity: peer=%q key=%q", clone.PeerID, clone.Key)
+	}
+	if clone.Query != original.Query || clone.UserAgent != original.UserAgent || len(clone.RequestHeaders) != 1 {
+		t.Fatalf("profile fields changed in clone: %#v", clone)
+	}
+	clone.RequestHeaders[0].Value = "changed"
+	if original.RequestHeaders[0].Value == "changed" {
+		t.Fatal("request headers were not deep-copied")
 	}
 }

@@ -34,16 +34,19 @@ type keyGeneratorConfig struct {
 
 // peerIDAlgorithmConfig holds the algorithm configuration for peer ID generation.
 type peerIDAlgorithmConfig struct {
-	Type    string `json:"type"`
-	Pattern string `json:"pattern"`
-	Length  int    `json:"length"`
+	Type           string `json:"type"`
+	Pattern        string `json:"pattern"`
+	Length         int    `json:"length"`
+	Prefix         string `json:"prefix"`
+	CharactersPool string `json:"charactersPool"`
+	Base           int    `json:"base"`
 }
 
 // peerIDGeneratorConfig holds the full peer ID generator settings.
 type peerIDGeneratorConfig struct {
-	Algorithm     peerIDAlgorithmConfig `json:"algorithm"`
-	RefreshOn     string                `json:"refreshOn"`
-	ShouldURLEncode bool               `json:"shouldUrlEncode"`
+	Algorithm       peerIDAlgorithmConfig `json:"algorithm"`
+	RefreshOn       string                `json:"refreshOn"`
+	ShouldURLEncode bool                  `json:"shouldUrlEncode"`
 }
 
 // urlEncoderConfig holds URL encoding settings.
@@ -93,6 +96,47 @@ type AnnounceParams struct {
 	Left       int64
 	Event      string // "started", "stopped", "completed", ""
 	IP         string // optional: override IP reported to tracker
+}
+
+// CloneWithFreshIdentity copies a client profile and generates a distinct
+// peer ID and tracker key while preserving its wire-format settings.
+func (c *ClientConfig) CloneWithFreshIdentity() (*ClientConfig, error) {
+	clone := c.clone()
+
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		clone.PeerID, err = generatePeerID(c.peerIDGen)
+		if err != nil {
+			return nil, fmt.Errorf("generating cloned peer ID: %w", err)
+		}
+		if clone.PeerID != c.PeerID {
+			break
+		}
+	}
+	if clone.PeerID == c.PeerID {
+		return nil, fmt.Errorf("could not generate a distinct cloned peer ID")
+	}
+
+	for attempt := 0; attempt < 8; attempt++ {
+		clone.Key, err = generateKey(c.keyGen)
+		if err != nil {
+			return nil, fmt.Errorf("generating cloned tracker key: %w", err)
+		}
+		if clone.Key != c.Key {
+			break
+		}
+	}
+	if clone.Key == c.Key {
+		return nil, fmt.Errorf("could not generate a distinct cloned tracker key")
+	}
+	return clone, nil
+}
+
+func (c *ClientConfig) clone() *ClientConfig {
+	clone := *c
+	clone.RequestHeaders = append([]Header(nil), c.RequestHeaders...)
+	clone.announceCount = 0
+	return &clone
 }
 
 // LoadClientConfig parses a .client JSON file, generates the initial PeerID
@@ -253,6 +297,8 @@ func generatePeerID(cfg peerIDGeneratorConfig) (string, error) {
 	switch cfg.Algorithm.Type {
 	case "REGEX":
 		return generatePeerIDFromRegex(cfg.Algorithm.Pattern)
+	case "RANDOM_POOL_WITH_CHECKSUM":
+		return generateChecksummedPeerID(cfg.Algorithm)
 	case "HASH":
 		length := cfg.Algorithm.Length
 		if length <= 0 {
@@ -278,51 +324,108 @@ func generatePeerID(cfg peerIDGeneratorConfig) (string, error) {
 // character classes, falling back to alphanumeric characters.
 func generatePeerIDFromRegex(pattern string) (string, error) {
 	const totalLen = 20
+	runes := []rune(pattern)
+	peerID := make([]byte, 0, totalLen)
 
-	// Extract literal ASCII prefix: everything up to the first '[', '(', or '\'
-	prefixEnd := strings.IndexAny(pattern, `[(\`)
-	prefix := ""
-	if prefixEnd < 0 {
-		prefix = pattern
-	} else {
-		prefix = pattern[:prefixEnd]
-	}
-
-	// Keep only printable ASCII from the prefix (some .client files embed
-	// raw high-bytes as decorators between literal segments).
-	var asciiPrefix strings.Builder
-	for _, r := range prefix {
-		if r >= 0x20 && r <= 0x7e {
-			asciiPrefix.WriteRune(r)
+	for i := 0; i < len(runes); {
+		switch runes[i] {
+		case '[':
+			end := i + 1
+			for end < len(runes) && runes[end] != ']' {
+				end++
+			}
+			if end >= len(runes) {
+				return "", fmt.Errorf("unterminated peer ID character class")
+			}
+			pool := expandCharClass(string(runes[i+1 : end]))
+			if len(pool) == 0 {
+				return "", fmt.Errorf("empty peer ID character class")
+			}
+			count := 1
+			next := end + 1
+			if next < len(runes) && runes[next] == '{' {
+				closeAt := next + 1
+				for closeAt < len(runes) && runes[closeAt] != '}' {
+					closeAt++
+				}
+				if closeAt >= len(runes) {
+					return "", fmt.Errorf("unterminated peer ID quantifier")
+				}
+				parsed, err := strconv.Atoi(string(runes[next+1 : closeAt]))
+				if err != nil || parsed < 0 {
+					return "", fmt.Errorf("invalid peer ID quantifier %q", string(runes[next:closeAt+1]))
+				}
+				count = parsed
+				next = closeAt + 1
+			}
+			randomBytes := make([]byte, count)
+			if _, err := rand.Read(randomBytes); err != nil {
+				return "", fmt.Errorf("reading random bytes: %w", err)
+			}
+			for _, randomByte := range randomBytes {
+				peerID = append(peerID, pool[int(randomByte)%len(pool)])
+			}
+			i = next
+		case '(':
+			end := i + 1
+			for end < len(runes) && runes[end] != ')' {
+				end++
+			}
+			if end >= len(runes) {
+				return "", fmt.Errorf("unterminated peer ID literal group")
+			}
+			for _, literal := range runes[i+1 : end] {
+				if literal > 0xff {
+					return "", fmt.Errorf("peer ID literal U+%04X exceeds one byte", literal)
+				}
+				peerID = append(peerID, byte(literal))
+			}
+			i = end + 1
+		case '\\':
+			if i+1 >= len(runes) || runes[i+1] > 0xff {
+				return "", fmt.Errorf("invalid escaped peer ID literal")
+			}
+			peerID = append(peerID, byte(runes[i+1]))
+			i += 2
+		default:
+			if runes[i] > 0xff {
+				return "", fmt.Errorf("peer ID literal U+%04X exceeds one byte", runes[i])
+			}
+			peerID = append(peerID, byte(runes[i]))
+			i++
 		}
 	}
-	prefix = asciiPrefix.String()
-	if len(prefix) > totalLen {
-		prefix = prefix[:totalLen]
+
+	if len(peerID) != totalLen {
+		return "", fmt.Errorf("generated peer ID has %d bytes, want %d", len(peerID), totalLen)
+	}
+	return string(peerID), nil
+}
+
+func generateChecksummedPeerID(cfg peerIDAlgorithmConfig) (string, error) {
+	const totalLen = 20
+	suffixLength := totalLen - len(cfg.Prefix)
+	if cfg.Prefix == "" || suffixLength < 2 {
+		return "", fmt.Errorf("invalid checksummed peer ID prefix %q", cfg.Prefix)
+	}
+	if cfg.Base <= 0 || cfg.Base > len(cfg.CharactersPool) {
+		return "", fmt.Errorf("invalid checksummed peer ID base %d", cfg.Base)
 	}
 
-	remaining := totalLen - len(prefix)
-	if remaining <= 0 {
-		return prefix, nil
-	}
-
-	// Determine fill characters from what the pattern allows after the prefix.
-	// Default to alphanumeric if the pattern isn't parseable.
-	fillChars := buildFillChars(pattern[prefixEnd:])
-	if len(fillChars) == 0 {
-		fillChars = []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-	}
-
-	buf := make([]byte, remaining)
-	randBuf := make([]byte, remaining)
-	if _, err := rand.Read(randBuf); err != nil {
+	randomBytes := make([]byte, suffixLength-1)
+	if _, err := rand.Read(randomBytes); err != nil {
 		return "", fmt.Errorf("reading random bytes: %w", err)
 	}
-	for i := range buf {
-		buf[i] = fillChars[int(randBuf[i])%len(fillChars)]
+	suffix := make([]byte, suffixLength)
+	total := 0
+	for i, randomByte := range randomBytes {
+		value := int(randomByte) % cfg.Base
+		total += value
+		suffix[i] = cfg.CharactersPool[value]
 	}
-
-	return prefix + string(buf), nil
+	checksum := (cfg.Base - total%cfg.Base) % cfg.Base
+	suffix[len(suffix)-1] = cfg.CharactersPool[checksum]
+	return cfg.Prefix + string(suffix), nil
 }
 
 // buildFillChars extracts a character set from the tail of a regex pattern.
@@ -362,15 +465,10 @@ func expandCharClass(class string) []byte {
 	runes := []rune(class)
 	i := 0
 	for i < len(runes) {
-		if runes[i] > 0x7e {
-			// Skip non-ASCII rune literals that appear in some .client files.
-			i++
-			continue
-		}
-		if i+2 < len(runes) && runes[i+1] == '-' && runes[i+2] > runes[i] && runes[i+2] <= 0x7e {
+		if i+2 < len(runes) && runes[i+1] == '-' && runes[i+2] >= runes[i] && runes[i+2] <= 0xff {
 			// Range: a-z
-			for b := byte(runes[i]); b <= byte(runes[i+2]); b++ {
-				add(b)
+			for value := int(runes[i]); value <= int(runes[i+2]); value++ {
+				add(byte(value))
 			}
 			i += 3
 			continue
@@ -378,13 +476,13 @@ func expandCharClass(class string) []byte {
 		if runes[i] == '\\' && i+1 < len(runes) {
 			// Escaped character: \( \) \! etc.
 			i++
-			if runes[i] <= 0x7e {
+			if runes[i] <= 0xff {
 				add(byte(runes[i]))
 			}
 			i++
 			continue
 		}
-		if runes[i] <= 0x7e {
+		if runes[i] <= 0xff {
 			add(byte(runes[i]))
 		}
 		i++

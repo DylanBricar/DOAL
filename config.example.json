@@ -9,10 +9,8 @@
   "announceJitterPercent": 10,
   "peerResponseMode": "BITFIELD",
   "perTorrentBandwidth": true,
-  "minSpeedWhenNoLeechers": 30,
-  "simulateDownload": false,
+  "simulateDownload": true,
   "enableBurstSpeed": false,
-  "enablePortRotation": false,
   "rotateClientOnRestart": false,
   "swarmAwareSpeed": true,
   "enableSchedule": false,
@@ -22,5 +20,9 @@
   "proxyType": "socks5",
   "proxyUrl": "",
   "maxAnnounceFailures": 5,
-  "announceIp": ""
+  "announceIp": "",
+  "enablePieceProxy": false,
+  "dhtBootstrapNodes": [],
+  "enableLabSybilRing": false,
+  "labSybilPeers": 0
 }

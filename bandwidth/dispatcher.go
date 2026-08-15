@@ -1,7 +1,6 @@
 package bandwidth
 
 import (
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,14 +9,13 @@ import (
 )
 
 const (
-	tickInterval         = 5 * time.Second
-	speedRefreshInterval = 20 * time.Minute
+	tickInterval = 5 * time.Second
 
-	burstChance     = 0.05 // 5% chance of burst per tick
-	burstMinMult    = 1.5
-	burstMaxMult    = 3.0
-	burstDecayRate  = 0.85 // multiplier decays each tick
-	burstMinActive  = 1.01 // burst considered active above this multiplier
+	burstChance    = 0.05 // 5% chance of burst per tick
+	burstMinMult   = 1.5
+	burstMaxMult   = 3.0
+	burstDecayRate = 0.85 // multiplier decays each tick
+	burstMinActive = 1.01 // burst considered active above this multiplier
 
 	swarmAwareMultiplier = 1.2 // speed boost when leechers > 2 * seeders
 )
@@ -52,18 +50,12 @@ type Dispatcher struct {
 	peers         map[string]Peers         // infoHashHex -> seeders/leechers
 	paused        map[string]bool          // infoHashHex -> paused
 	torrentSizes  map[string]int64         // infoHashHex -> total size in bytes
+	flows         map[string]*torrentFlow  // infoHashHex -> independent stochastic state
 	mu            sync.RWMutex
 	totalUploaded int64 // accessed exclusively via atomic ops — mu is NOT used for this field
 	onSpeedChange func(speeds map[string]int64, totalUploaded int64)
 	stop          chan struct{}
 	stopOnce      sync.Once
-
-	// burst state, protected by mu
-	burstMultiplier float64
-	lastRefresh     time.Time
-
-	// startTime tracks when Run() was called, used for speed warmup.
-	startTime time.Time
 }
 
 // NewDispatcher creates a Dispatcher with the given config and speed provider.
@@ -82,9 +74,9 @@ func NewDispatcher(
 		peers:         make(map[string]Peers),
 		paused:        make(map[string]bool),
 		torrentSizes:  make(map[string]int64),
+		flows:         make(map[string]*torrentFlow),
 		onSpeedChange: onSpeedChange,
 		stop:          make(chan struct{}),
-		lastRefresh:   time.Now(),
 	}
 }
 
@@ -121,6 +113,13 @@ func (d *Dispatcher) RegisterTorrent(infoHashHex string, size int64) {
 		d.speeds[infoHashHex] = 0
 		d.peers[infoHashHex] = Peers{}
 		d.torrentSizes[infoHashHex] = size
+		now := time.Now()
+		d.flows[infoHashHex] = newTorrentFlow(
+			now,
+			d.config.MinUploadRate*1000,
+			d.config.MaxUploadRate*1000,
+			flowSeed(infoHashHex),
+		)
 	}
 }
 
@@ -132,13 +131,17 @@ func (d *Dispatcher) UnregisterTorrent(infoHashHex string) {
 	delete(d.stats, infoHashHex)
 	delete(d.speeds, infoHashHex)
 	delete(d.peers, infoHashHex)
+	delete(d.paused, infoHashHex)
 	delete(d.torrentSizes, infoHashHex)
+	delete(d.flows, infoHashHex)
 }
 
 // UpdatePeers records the latest seeder/leecher counts for a torrent.
 func (d *Dispatcher) UpdatePeers(infoHashHex string, seeders, leechers int) {
 	d.mu.Lock()
-	d.peers[infoHashHex] = Peers{Seeders: seeders, Leechers: leechers}
+	if _, exists := d.stats[infoHashHex]; exists {
+		d.peers[infoHashHex] = Peers{Seeders: seeders, Leechers: leechers}
+	}
 	d.mu.Unlock()
 }
 
@@ -151,8 +154,6 @@ func (d *Dispatcher) GetStats(infoHashHex string) *TorrentStats {
 
 // Run starts the main dispatch loop. It blocks until Stop is called.
 func (d *Dispatcher) Run() {
-	d.startTime = time.Now()
-
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
@@ -176,12 +177,6 @@ func (d *Dispatcher) Stop() {
 func (d *Dispatcher) tick() {
 	d.mu.Lock()
 
-	// Refresh base speed every 20 minutes.
-	if time.Since(d.lastRefresh) >= speedRefreshInterval {
-		d.speedProvider.Refresh()
-		d.lastRefresh = time.Now()
-	}
-
 	// If schedule is active and we are outside the allowed window, speeds are 0.
 	if d.config.EnableSchedule && !d.isWithinSchedule() {
 		for k := range d.speeds {
@@ -196,9 +191,6 @@ func (d *Dispatcher) tick() {
 		return
 	}
 
-	baseSpeed := d.speedProvider.CurrentSpeed()
-	d.updateBurst()
-
 	torrentCount := len(d.stats)
 	if torrentCount == 0 {
 		speeds := d.snapshotSpeeds()
@@ -212,13 +204,19 @@ func (d *Dispatcher) tick() {
 
 	tickSeconds := int64(tickInterval.Seconds())
 
+	now := time.Now()
 	for hash := range d.stats {
+		baseSpeed := d.speedProvider.CurrentSpeed()
+		flow := d.flows[hash]
+		if flow != nil {
+			baseSpeed = flow.sample(now, d.config.EnableBurstSpeed)
+		}
 		speed := d.computeTorrentSpeed(hash, baseSpeed, torrentCount)
 		d.speeds[hash] = speed
 		if !d.paused[hash] {
 			gained := speed * tickSeconds
-			if speed > 0 {
-				gained += int64(rand.Intn(201)) - 100
+			if speed > 0 && flow != nil {
+				gained += int64(flow.rng.Intn(201)) - 100
 			}
 			if gained < 0 {
 				gained = 0
@@ -262,6 +260,9 @@ func (d *Dispatcher) computeTorrentSpeed(hash string, baseSpeed int64, torrentCo
 		return 0
 	}
 	speed := baseSpeed
+	if speed <= 0 {
+		return 0
+	}
 
 	// When NOT using perTorrentBandwidth, divide global speed across torrents.
 	// When perTorrentBandwidth is true, each torrent gets the full speed independently.
@@ -271,21 +272,13 @@ func (d *Dispatcher) computeTorrentSpeed(hash string, baseSpeed int64, torrentCo
 
 	p := d.peers[hash]
 	noLeechers := p.Leechers == 0
+	if noLeechers {
+		return 0
+	}
 
 	// Apply swarm-aware boost: torrents with many leechers get a bonus.
 	if d.config.SwarmAwareSpeed && !noLeechers && p.Leechers > p.Seeders*2 {
 		speed = int64(float64(speed) * swarmAwareMultiplier)
-	}
-
-	// Apply burst multiplier.
-	if d.config.EnableBurstSpeed && d.burstMultiplier > burstMinActive {
-		speed = int64(float64(speed) * d.burstMultiplier)
-	}
-
-	// Use minimum speed floor when there are no leechers (config is in kB/s).
-	minNoLeechers := d.config.MinSpeedWhenNoLeechers * 1000
-	if noLeechers && speed < minNoLeechers {
-		speed = minNoLeechers
 	}
 
 	// Clamp to configured range (config is in kB/s, speed is in bytes/s).
@@ -299,39 +292,7 @@ func (d *Dispatcher) computeTorrentSpeed(hash string, baseSpeed int64, torrentCo
 		speed = clamp(speed, minRate/int64(torrentCount), maxRate/int64(torrentCount))
 	}
 
-	// Warmup: gradually increase speed over first 60 seconds.
-	elapsed := time.Since(d.startTime).Seconds()
-	if elapsed < 60 {
-		warmupFactor := elapsed / 60.0 // 0.0 to 1.0
-		speed = int64(float64(speed) * warmupFactor)
-		if speed < 1000 {
-			speed = 1000 // minimum 1 KB/s during warmup
-		}
-	}
-
 	return speed
-}
-
-// updateBurst rolls the dice for a new burst or decays an existing one.
-func (d *Dispatcher) updateBurst() {
-	if !d.config.EnableBurstSpeed {
-		d.burstMultiplier = 1.0
-		return
-	}
-
-	if d.burstMultiplier > burstMinActive {
-		// Decay existing burst.
-		d.burstMultiplier *= burstDecayRate
-		if d.burstMultiplier <= burstMinActive {
-			d.burstMultiplier = 1.0
-		}
-		return
-	}
-
-	// Roll for a new burst.
-	if rand.Float64() < burstChance {
-		d.burstMultiplier = burstMinMult + rand.Float64()*(burstMaxMult-burstMinMult)
-	}
 }
 
 // isWithinSchedule returns true when the current hour falls within the
@@ -369,6 +330,9 @@ func (d *Dispatcher) snapshotSpeeds() map[string]int64 {
 func (d *Dispatcher) PauseTorrent(infoHashHex string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if _, exists := d.stats[infoHashHex]; !exists {
+		return
+	}
 	d.paused[infoHashHex] = true
 	d.speeds[infoHashHex] = 0
 }
@@ -391,6 +355,9 @@ func (d *Dispatcher) UpdateConfig(cfg *config.Config) {
 		d.speedProvider = NewRandomSpeedProvider(cfg.MinUploadRate*1000, cfg.MaxUploadRate*1000)
 	}
 	d.speedProvider.Refresh()
+	for _, flow := range d.flows {
+		flow.updateRange(cfg.MinUploadRate*1000, cfg.MaxUploadRate*1000)
+	}
 }
 
 func clamp(v, min, max int64) int64 {

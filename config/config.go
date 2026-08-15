@@ -4,9 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
+
+const MaxSimultaneousSeed = 512
 
 const (
 	SpeedModelOrganic = "ORGANIC"
@@ -20,26 +26,26 @@ const (
 
 // Config holds all user-configurable settings for DOAL.
 type Config struct {
-	MinUploadRate             int64   `json:"minUploadRate"`
-	MaxUploadRate             int64   `json:"maxUploadRate"`
-	SimultaneousSeed          int     `json:"simultaneousSeed"`
-	Client                    string  `json:"client"`
-	KeepTorrentWithZeroLeechers bool  `json:"keepTorrentWithZeroLeechers"`
-	UploadRatioTarget         float64 `json:"uploadRatioTarget"`
-	SpeedModel                string  `json:"speedModel"`
-	AnnounceJitterPercent     int     `json:"announceJitterPercent"`
-	PeerResponseMode          string  `json:"peerResponseMode"`
-	PerTorrentBandwidth       bool    `json:"perTorrentBandwidth"`
-	MinSpeedWhenNoLeechers    int64   `json:"minSpeedWhenNoLeechers"`
-	SimulateDownload          bool    `json:"simulateDownload"`
-	EnableBurstSpeed          bool    `json:"enableBurstSpeed"`
-	// EnablePortRotation is accepted but not yet implemented in the Go version.
-	EnablePortRotation        bool    `json:"enablePortRotation"`
-	RotateClientOnRestart     bool    `json:"rotateClientOnRestart"`
-	SwarmAwareSpeed           bool    `json:"swarmAwareSpeed"`
-	EnableSchedule            bool    `json:"enableSchedule"`
-	ScheduleStartHour         int     `json:"scheduleStartHour"`
-	ScheduleEndHour           int     `json:"scheduleEndHour"`
+	MinUploadRate               int64   `json:"minUploadRate"`
+	MaxUploadRate               int64   `json:"maxUploadRate"`
+	SimultaneousSeed            int     `json:"simultaneousSeed"`
+	Client                      string  `json:"client"`
+	KeepTorrentWithZeroLeechers bool    `json:"keepTorrentWithZeroLeechers"`
+	UploadRatioTarget           float64 `json:"uploadRatioTarget"`
+	SpeedModel                  string  `json:"speedModel"`
+	AnnounceJitterPercent       int     `json:"announceJitterPercent"`
+	PeerResponseMode            string  `json:"peerResponseMode"`
+	PerTorrentBandwidth         bool    `json:"perTorrentBandwidth"`
+	SimulateDownload            bool    `json:"simulateDownload"`
+	EnableBurstSpeed            bool    `json:"enableBurstSpeed"`
+	// EnablePortRotation is retained for config compatibility but rejected by
+	// validation because tracker, PeerWire and DHT ports must remain identical.
+	EnablePortRotation    bool `json:"enablePortRotation"`
+	RotateClientOnRestart bool `json:"rotateClientOnRestart"`
+	SwarmAwareSpeed       bool `json:"swarmAwareSpeed"`
+	EnableSchedule        bool `json:"enableSchedule"`
+	ScheduleStartHour     int  `json:"scheduleStartHour"`
+	ScheduleEndHour       int  `json:"scheduleEndHour"`
 
 	// Proxy settings — empty ProxyURL means no proxy.
 	ProxyEnabled bool   `json:"proxyEnabled"`
@@ -52,6 +58,20 @@ type Config struct {
 
 	// AnnounceIP overrides the IP reported to trackers. Empty = auto.
 	AnnounceIP string `json:"announceIp"`
+
+	// EnablePieceProxy turns on the isolated-lab piece provider. Fetched pieces
+	// are SHA-1 verified and stored in a bounded cache; unavailable data is
+	// rejected. It is off by default and meaningful only in FAKE_DATA mode.
+	EnablePieceProxy bool `json:"enablePieceProxy"`
+
+	// DHTBootstrapNodes contains explicitly configured DHT entry points.
+	// Any valid DNS hostname or IP address with a UDP port is accepted.
+	DHTBootstrapNodes []string `json:"dhtBootstrapNodes"`
+
+	// EnableLabSybilRing enables matched counterparty accounting for the
+	// configured tracker lab. It is deliberately off by default and bounded.
+	EnableLabSybilRing bool `json:"enableLabSybilRing"`
+	LabSybilPeers      int  `json:"labSybilPeers"`
 
 	// path is the file this config was loaded from, not exported to JSON.
 	path string
@@ -69,7 +89,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: reading %q: %w", absPath, err)
 	}
 
-	var cfg Config
+	cfg := Config{SimulateDownload: true}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config: parsing %q: %w", absPath, err)
 	}
@@ -116,8 +136,13 @@ func (c *Config) Validate() error {
 	if c.MaxUploadRate < c.MinUploadRate {
 		errs = append(errs, fmt.Errorf("maxUploadRate (%d) must be >= minUploadRate (%d)", c.MaxUploadRate, c.MinUploadRate))
 	}
+	if c.MaxUploadRate > math.MaxInt64/3000 {
+		errs = append(errs, fmt.Errorf("maxUploadRate (%d) is too large", c.MaxUploadRate))
+	}
 	if c.SimultaneousSeed < 1 {
 		errs = append(errs, errors.New("simultaneousSeed must be >= 1"))
+	} else if c.SimultaneousSeed > MaxSimultaneousSeed {
+		errs = append(errs, fmt.Errorf("simultaneousSeed must be <= %d", MaxSimultaneousSeed))
 	}
 	if c.Client == "" {
 		errs = append(errs, errors.New("client must not be empty"))
@@ -137,9 +162,6 @@ func (c *Config) Validate() error {
 			PeerResponseModeNone, PeerResponseModeHandshakeOnly, PeerResponseModeBitfield, PeerResponseModeFakeData,
 			c.PeerResponseMode))
 	}
-	if c.MinSpeedWhenNoLeechers < 0 {
-		errs = append(errs, errors.New("minSpeedWhenNoLeechers must be >= 0"))
-	}
 	if c.EnableSchedule {
 		if c.ScheduleStartHour < 0 || c.ScheduleStartHour > 23 {
 			errs = append(errs, fmt.Errorf("scheduleStartHour must be in [0, 23], got %d", c.ScheduleStartHour))
@@ -151,8 +173,31 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("scheduleStartHour and scheduleEndHour must be different"))
 		}
 	}
+	if c.EnablePortRotation {
+		errs = append(errs, errors.New("enablePortRotation is unsupported because the announced, PeerWire and DHT ports must remain identical"))
+	}
+	for _, endpoint := range c.DHTBootstrapNodes {
+		if !isValidDHTEndpoint(endpoint) {
+			errs = append(errs, fmt.Errorf("dhtBootstrapNodes contains invalid endpoint %q", endpoint))
+		}
+	}
+	if c.LabSybilPeers < 0 || c.LabSybilPeers > 8 {
+		errs = append(errs, fmt.Errorf("labSybilPeers must be in [0, 8], got %d", c.LabSybilPeers))
+	}
+	if c.EnableLabSybilRing && c.LabSybilPeers < 2 {
+		errs = append(errs, fmt.Errorf("labSybilPeers must be in [2, 8] when enableLabSybilRing is true, got %d", c.LabSybilPeers))
+	}
 
 	return errors.Join(errs...)
+}
+
+func isValidDHTEndpoint(endpoint string) bool {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || strings.TrimSuffix(host, ".") == "" {
+		return false
+	}
+	value, err := strconv.Atoi(port)
+	return err == nil && value >= 1 && value <= 65535
 }
 
 // Path returns the absolute file path this config was loaded from.

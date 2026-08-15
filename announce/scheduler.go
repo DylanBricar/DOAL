@@ -2,6 +2,9 @@ package announce
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
+	"hash/fnv"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -13,6 +16,8 @@ import (
 	"doal/torrent"
 )
 
+const maxConcurrentAnnounces = 32
+
 // scheduledTorrent tracks an Announcer alongside its next scheduled announce time.
 type scheduledTorrent struct {
 	mu               sync.Mutex
@@ -20,23 +25,34 @@ type scheduledTorrent struct {
 	nextAt           time.Time
 	started          bool
 	paused           bool
-	downloadedSoFar  int64
-	completedSent    bool
+	download         *downloadLifecycle
+	ring             *matchedRing
+	rng              *rand.Rand
 	consecutiveFails int
 	announcing       bool // prevents double-announce when tick fires before previous finishes
+	announceDone     chan struct{}
+	removed          bool
+}
+
+func (e *scheduledTorrent) finishAnnounceLocked() {
+	e.announcing = false
+	if e.announceDone != nil {
+		close(e.announceDone)
+		e.announceDone = nil
+	}
 }
 
 // Scheduler manages periodic announces for a set of torrents.
 // It honours per-torrent intervals with configurable jitter.
 type Scheduler struct {
-	announcers    map[string]*scheduledTorrent // infoHashHex -> entry
-	mu            sync.RWMutex
-	jitterPct     int
-	port          int
-	portMu        sync.RWMutex
-	client        *ClientConfig
-	config        *config.Config
-	httpClient    *http.Client
+	announcers     map[string]*scheduledTorrent // infoHashHex -> entry
+	mu             sync.RWMutex
+	jitterPct      int
+	port           int
+	portMu         sync.RWMutex
+	client         *ClientConfig
+	config         *config.Config
+	httpClient     *http.Client
 	onSuccess      func(infoHashHex string, resp *AnnounceResponse)
 	onFailure      func(infoHashHex string, err error)
 	onTooManyFails func(infoHashHex string)
@@ -67,14 +83,20 @@ func NewScheduler(
 	}
 
 	return &Scheduler{
-		announcers:     make(map[string]*scheduledTorrent),
-		jitterPct:      jitterPct,
-		port:           port,
-		client:         client,
-		config:         cfg,
+		announcers: make(map[string]*scheduledTorrent),
+		jitterPct:  jitterPct,
+		port:       port,
+		client:     client,
+		config:     cfg,
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,
 			Transport: transport,
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				if !IsSupportedTrackerURL(req.URL.String()) {
+					return http.ErrUseLastResponse
+				}
+				return nil
+			},
 		},
 		onSuccess:      onSuccess,
 		onFailure:      onFailure,
@@ -94,12 +116,47 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) {
 		return
 	}
 
-	a := newAnnouncer(t, s.client, s.httpClient)
-	s.announcers[t.InfoHashHex] = &scheduledTorrent{
-		announcer: a,
-		nextAt:    time.Now().Add(time.Duration(rand.Intn(15)) * time.Second), // stagger 0-15s
-		started:   false,
+	torrentClient := s.client.clone()
+	a := newAnnouncer(t, torrentClient, s.httpClient)
+	now := time.Now()
+	seed := schedulerSeed(t.InfoHashHex)
+	rng := rand.New(rand.NewSource(seed))
+	minDownloadRate := int64(1)
+	maxDownloadRate := int64(1)
+	if s.config != nil {
+		minDownloadRate = s.config.MinUploadRate * 1000
+		maxDownloadRate = s.config.MaxUploadRate * 3000
 	}
+	entry := &scheduledTorrent{
+		announcer: a,
+		nextAt:    now.Add(time.Duration(rng.Intn(16)) * time.Second),
+		started:   false,
+		download:  newDownloadLifecycle(t.Size, minDownloadRate, maxDownloadRate, now, seed^0x5deece66d),
+		rng:       rng,
+	}
+	if s.config != nil && s.config.EnableLabSybilRing {
+		baselineUploaded := int64(0)
+		if s.getUploaded != nil {
+			baselineUploaded = s.getUploaded(t.InfoHashHex)
+		}
+		ring, err := newMatchedRing(
+			t,
+			torrentClient,
+			s.httpClient,
+			s.config.LabSybilPeers,
+			s.GetPort(),
+			s.config.AnnounceIP,
+			baselineUploaded,
+		)
+		if err != nil {
+			if s.onFailure != nil {
+				s.onFailure(t.InfoHashHex, err)
+			}
+		} else {
+			entry.ring = ring
+		}
+	}
+	s.announcers[t.InfoHashHex] = entry
 }
 
 // RemoveTorrent sends a stopped announce and removes the torrent from the
@@ -115,19 +172,41 @@ func (s *Scheduler) RemoveTorrent(infoHashHex string) {
 	if !exists {
 		return
 	}
+	entry.mu.Lock()
+	entry.removed = true
+	announceDone := entry.announceDone
+	entry.mu.Unlock()
+	if announceDone != nil {
+		<-announceDone
+	}
+	if entry.ring != nil {
+		defer func() {
+			if err := entry.ring.stop(); err != nil && s.onFailure != nil {
+				s.onFailure(infoHashHex, err)
+			}
+		}()
+	}
 
 	t := entry.announcer.torrent
-	// Include final uploaded bytes in stopped announce
+	// Include final transfer counters in the stopped announce.
 	uploaded := int64(0)
 	if s.getUploaded != nil {
 		uploaded = s.getUploaded(infoHashHex)
 	}
+	downloaded := int64(0)
+	left := int64(0)
+	if s.config != nil && s.config.SimulateDownload && entry.download != nil {
+		entry.mu.Lock()
+		downloaded, left, _ = entry.download.peek(time.Now())
+		entry.mu.Unlock()
+	}
 	params := AnnounceParams{
-		InfoHash: t.InfoHash,
-		Port:     s.GetPort(),
-		Uploaded: uploaded,
-		Left:     0,
-		Event:    "stopped",
+		InfoHash:   t.InfoHash,
+		Port:       s.GetPort(),
+		Uploaded:   uploaded,
+		Downloaded: downloaded,
+		Left:       left,
+		Event:      "stopped",
 	}
 
 	resp, err := entry.announcer.Announce(params)
@@ -139,6 +218,11 @@ func (s *Scheduler) RemoveTorrent(infoHashHex string) {
 	}
 	if s.onSuccess != nil {
 		s.onSuccess(infoHashHex, resp)
+	}
+	if entry.ring != nil {
+		if err := entry.ring.matchUploaded(uploaded); err != nil && s.onFailure != nil {
+			s.onFailure(infoHashHex, err)
+		}
 	}
 }
 
@@ -198,15 +282,27 @@ func (s *Scheduler) tick() {
 	}
 	s.mu.RUnlock()
 
-	// Announce all due torrents in parallel to avoid blocking on slow trackers.
-	var wg sync.WaitGroup
-	for _, hash := range due {
-		wg.Add(1)
-		go func(h string) {
-			defer wg.Done()
-			s.announceOne(h)
-		}(hash)
+	// Bound both goroutine count and network concurrency when many torrents are
+	// due at once.
+	if len(due) == 0 {
+		return
 	}
+	workerCount := min(len(due), maxConcurrentAnnounces)
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for hash := range jobs {
+				s.announceOne(hash)
+			}
+		}()
+	}
+	for _, hash := range due {
+		jobs <- hash
+	}
+	close(jobs)
 	wg.Wait()
 }
 
@@ -225,15 +321,15 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 	// Guard against double-announce when a slow tracker causes the next tick
 	// to fire before the previous announce goroutine has finished.
 	entry.mu.Lock()
-	if entry.announcing {
+	if entry.announcing || entry.removed {
 		entry.mu.Unlock()
 		return
 	}
 	entry.announcing = true
+	entry.announceDone = make(chan struct{})
 	// Snapshot fields needed to build the announce params.
 	started := entry.started
-	downloadedSoFar := entry.downloadedSoFar
-	completedSent := entry.completedSent
+	download := entry.download
 	entry.mu.Unlock()
 
 	t := entry.announcer.torrent
@@ -244,14 +340,13 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 
 	left := int64(0)
 	downloaded := int64(0)
-	if s.config != nil && s.config.SimulateDownload {
-		left = t.Size - downloadedSoFar
-		if left < 0 {
-			left = 0
-		}
-		downloaded = downloadedSoFar
+	completedTransition := false
+	if s.config != nil && s.config.SimulateDownload && download != nil {
+		entry.mu.Lock()
+		downloaded, left, completedTransition = download.peek(time.Now())
+		entry.mu.Unlock()
 		// Send completed event when download finishes for the first time.
-		if left == 0 && !completedSent && started {
+		if completedTransition && started {
 			event = "completed"
 		}
 	}
@@ -289,10 +384,9 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 		s.mu.Unlock()
 
 		entry.mu.Lock()
-		entry.announcing = false
 		if stillTracked {
 			entry.consecutiveFails++
-			backoff := applyJitter(entry.announcer.interval, s.jitterPct)
+			backoff := applyJitterWithRand(entry.announcer.interval, s.jitterPct, entry.rng)
 			entry.nextAt = time.Now().Add(backoff)
 		}
 		maxFails := 0
@@ -300,6 +394,10 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 			maxFails = s.config.MaxAnnounceFailures
 		}
 		tooMany := stillTracked && maxFails > 0 && entry.consecutiveFails >= maxFails
+		if tooMany {
+			entry.removed = true
+		}
+		entry.finishAnnounceLocked()
 		entry.mu.Unlock()
 
 		if tooMany {
@@ -309,6 +407,11 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 			if s.onTooManyFails != nil {
 				s.onTooManyFails(infoHashHex)
 			}
+			if entry.ring != nil {
+				if err := entry.ring.stop(); err != nil && s.onFailure != nil {
+					s.onFailure(infoHashHex, err)
+				}
+			}
 		}
 		return
 	}
@@ -316,30 +419,24 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 	if s.onSuccess != nil {
 		s.onSuccess(infoHashHex, resp)
 	}
+	if entry.ring != nil {
+		if err := entry.ring.matchUploaded(uploaded); err != nil && s.onFailure != nil {
+			s.onFailure(infoHashHex, err)
+		}
+	}
 
 	entry.mu.Lock()
-	entry.announcing = false
 	entry.started = true
 	entry.consecutiveFails = 0
-	if left == 0 && !entry.completedSent {
-		entry.completedSent = true
+	if completedTransition && event == "completed" && entry.download != nil {
+		entry.download.markCompletedEmitted()
 	}
 	interval := resp.Interval
 	if interval <= 0 {
 		interval = entry.announcer.interval
 	}
-	entry.nextAt = time.Now().Add(applyJitter(interval, s.jitterPct))
-	// Advance simulated download progress: download speed ~= upload speed * 3.
-	// Use the interval as the elapsed time window for this announce cycle.
-	if s.config != nil && s.config.SimulateDownload && t.Size > entry.downloadedSoFar {
-		downloadSpeed := (s.config.MaxUploadRate * 1000) * 3
-		elapsed := int64(interval)
-		gained := downloadSpeed * elapsed
-		entry.downloadedSoFar += gained
-		if entry.downloadedSoFar > t.Size {
-			entry.downloadedSoFar = t.Size
-		}
-	}
+	entry.nextAt = time.Now().Add(applyJitterWithRand(interval, s.jitterPct, entry.rng))
+	entry.finishAnnounceLocked()
 	entry.mu.Unlock()
 }
 
@@ -393,15 +490,34 @@ func (s *Scheduler) IsPaused(infoHashHex string) bool {
 // applyJitter applies a random ±jitterPct% variance to the given interval
 // in seconds, returning a time.Duration.
 func applyJitter(intervalSecs int, jitterPct int) time.Duration {
+	return applyJitterWithRand(intervalSecs, jitterPct, nil)
+}
+
+func applyJitterWithRand(intervalSecs int, jitterPct int, rng *rand.Rand) time.Duration {
 	if jitterPct <= 0 || intervalSecs <= 0 {
 		return time.Duration(intervalSecs) * time.Second
 	}
 
 	// Random factor in [-jitterPct, +jitterPct].
-	jitter := rand.Intn(2*jitterPct+1) - jitterPct
+	jitter := 0
+	if rng == nil {
+		jitter = rand.Intn(2*jitterPct+1) - jitterPct
+	} else {
+		jitter = rng.Intn(2*jitterPct+1) - jitterPct
+	}
 	adjusted := float64(intervalSecs) * (1.0 + float64(jitter)/100.0)
 	if adjusted < 1 {
 		adjusted = 1
 	}
 	return time.Duration(adjusted * float64(time.Second))
+}
+
+func schedulerSeed(infoHashHex string) int64 {
+	var raw [8]byte
+	if _, err := cryptorand.Read(raw[:]); err == nil {
+		return int64(binary.LittleEndian.Uint64(raw[:]))
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(infoHashHex))
+	return int64(h.Sum64() ^ uint64(time.Now().UnixNano()))
 }

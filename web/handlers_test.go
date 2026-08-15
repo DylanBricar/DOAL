@@ -10,22 +10,22 @@ import (
 
 // mockEngine is a test double for EngineController.
 type mockEngine struct {
-	cfg           *config.Config
-	clientFiles   []string
-	torrents      []*torrent.Torrent
-	seeding       bool
-	activeClient  string
+	cfg            *config.Config
+	clientFiles    []string
+	torrents       []*torrent.Torrent
+	seeding        bool
+	activeClient   string
 	announceStates []AnnounceState
-	speeds        map[string]int64
-	totalUploaded int64
-	uploaded      map[string]int64
-	paused        map[string]bool
-	trackerStats  map[string]int64
-	savedConfig   *config.Config
-	startCalled   bool
-	stopCalled    bool
-	pausedHashes  []string
-	resumedHashes []string
+	speeds         map[string]int64
+	totalUploaded  int64
+	uploaded       map[string]int64
+	paused         map[string]bool
+	trackerStats   map[string]int64
+	savedConfig    *config.Config
+	startCalled    bool
+	stopCalled     bool
+	pausedHashes   []string
+	resumedHashes  []string
 }
 
 func (m *mockEngine) Start() error {
@@ -42,12 +42,12 @@ func (m *mockEngine) SaveConfig(cfg *config.Config) error {
 	m.cfg = cfg
 	return nil
 }
-func (m *mockEngine) GetConfig() *config.Config         { return m.cfg }
-func (m *mockEngine) GetClientFiles() []string          { return m.clientFiles }
-func (m *mockEngine) GetTorrents() []*torrent.Torrent   { return m.torrents }
-func (m *mockEngine) IsSeeding() bool                   { return m.seeding }
-func (m *mockEngine) TorrentsDir() string               { return "/tmp" }
-func (m *mockEngine) GetActiveClient() string           { return m.activeClient }
+func (m *mockEngine) GetConfig() *config.Config       { return m.cfg }
+func (m *mockEngine) GetClientFiles() []string        { return m.clientFiles }
+func (m *mockEngine) GetTorrents() []*torrent.Torrent { return m.torrents }
+func (m *mockEngine) IsSeeding() bool                 { return m.seeding }
+func (m *mockEngine) TorrentsDir() string             { return "/tmp" }
+func (m *mockEngine) GetActiveClient() string         { return m.activeClient }
 func (m *mockEngine) GetSpeeds() (map[string]int64, int64, map[string]int64) {
 	return m.speeds, m.totalUploaded, m.uploaded
 }
@@ -129,12 +129,16 @@ func TestHandleGlobalStop(t *testing.T) {
 func TestHandleConfigSaveValid(t *testing.T) {
 	_, h, engine := setupHandlers()
 	payload := configSaveRequest{
-		MinUploadRate:    50,
-		MaxUploadRate:    150,
-		SimultaneousSeed: 2,
-		Client:           "some.client",
-		SpeedModel:       config.SpeedModelUniform,
-		PeerResponseMode: config.PeerResponseModeNone,
+		MinUploadRate:      50,
+		MaxUploadRate:      150,
+		SimultaneousSeed:   2,
+		Client:             "some.client",
+		SpeedModel:         config.SpeedModelUniform,
+		PeerResponseMode:   config.PeerResponseModeNone,
+		DHTBootstrapNodes:  []string{"127.0.0.1:6882"},
+		EnableLabSybilRing: true,
+		LabSybilPeers:      4,
+		EnablePieceProxy:   true,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -149,6 +153,15 @@ func TestHandleConfigSaveValid(t *testing.T) {
 	}
 	if engine.savedConfig.MaxUploadRate != 150 {
 		t.Errorf("MaxUploadRate: want 150, got %d", engine.savedConfig.MaxUploadRate)
+	}
+	if !engine.savedConfig.EnableLabSybilRing || engine.savedConfig.LabSybilPeers != 4 {
+		t.Errorf("lab ring config was not preserved: %+v", engine.savedConfig)
+	}
+	if len(engine.savedConfig.DHTBootstrapNodes) != 1 || engine.savedConfig.DHTBootstrapNodes[0] != "127.0.0.1:6882" {
+		t.Errorf("DHT bootstrap config was not preserved: %v", engine.savedConfig.DHTBootstrapNodes)
+	}
+	if !engine.savedConfig.EnablePieceProxy {
+		t.Error("piece proxy setting was not preserved")
 	}
 }
 

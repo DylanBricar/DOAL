@@ -1,6 +1,7 @@
 package bandwidth
 
 import (
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,13 +13,13 @@ import (
 // newTestConfig returns a minimal valid config for dispatcher tests.
 func newTestConfig(min, max int64, perTorrent bool, model string) *config.Config {
 	return &config.Config{
-		MinUploadRate:        min,
-		MaxUploadRate:        max,
-		SimultaneousSeed:     10,
-		Client:               "test.client",
-		SpeedModel:           model,
-		PeerResponseMode:     config.PeerResponseModeNone,
-		PerTorrentBandwidth:  perTorrent,
+		MinUploadRate:       min,
+		MaxUploadRate:       max,
+		SimultaneousSeed:    10,
+		Client:              "test.client",
+		SpeedModel:          model,
+		PeerResponseMode:    config.PeerResponseModeNone,
+		PerTorrentBandwidth: perTorrent,
 	}
 }
 
@@ -83,6 +84,7 @@ func TestDispatcherRegisterAndUnregister(t *testing.T) {
 		t.Error("bbb should be in snapshot after register")
 	}
 
+	d.PauseTorrent("aaa")
 	d.UnregisterTorrent("aaa")
 	snap = d.GetSpeedSnapshot()
 	if _, ok := snap["aaa"]; ok {
@@ -90,6 +92,12 @@ func TestDispatcherRegisterAndUnregister(t *testing.T) {
 	}
 	if _, ok := snap["bbb"]; !ok {
 		t.Error("bbb should still be in snapshot")
+	}
+	d.mu.RLock()
+	_, pausedRetained := d.paused["aaa"]
+	d.mu.RUnlock()
+	if pausedRetained {
+		t.Error("unregistered torrent was retained in paused state")
 	}
 }
 
@@ -154,10 +162,19 @@ func TestDispatcherUpdatePeers(t *testing.T) {
 	// Should not panic.
 	d.UpdatePeers("h1", 5, 20)
 	d.UpdatePeers("unknown", 1, 1) // unregistered — should not panic
+	d.PauseTorrent("unknown")      // unregistered — should not create state
+	d.mu.RLock()
+	_, peerRetained := d.peers["unknown"]
+	_, pauseRetained := d.paused["unknown"]
+	_, speedRetained := d.speeds["unknown"]
+	d.mu.RUnlock()
+	if peerRetained || pauseRetained || speedRetained {
+		t.Fatal("updates for an unknown torrent created retained dispatcher state")
+	}
 }
 
-// TestDispatcherTickAccumulatesUpload runs the dispatcher briefly and confirms
-// that upload bytes are accumulated after at least one tick.
+// TestDispatcherTickAccumulatesUpload confirms that upload bytes accumulate
+// once the randomized per-torrent warmup has elapsed.
 func TestDispatcherTickAccumulatesUpload(t *testing.T) {
 	cfg := newTestConfig(100, 200, true, config.SpeedModelUniform)
 	sp := NewRandomSpeedProvider(100_000, 200_000)
@@ -169,11 +186,22 @@ func TestDispatcherTickAccumulatesUpload(t *testing.T) {
 
 	d.RegisterTorrent("hash1", 0)
 	d.RegisterTorrent("hash2", 0)
+	d.UpdatePeers("hash1", 1, 3)
+	d.UpdatePeers("hash2", 2, 4)
 
-	go d.Run()
-	// Wait for at least two ticks (tickInterval is 5s).
-	time.Sleep(11 * time.Second)
-	d.Stop()
+	d.mu.Lock()
+	seed := int64(1)
+	for _, flow := range d.flows {
+		flow.warmupStartedAt = time.Now().Add(-10 * time.Minute)
+		flow.warmupDelay = 0
+		flow.zeroUntil = time.Time{}
+		flow.nextRefresh = time.Now().Add(time.Hour)
+		flow.rng = rand.New(rand.NewSource(seed))
+		seed++
+	}
+	d.mu.Unlock()
+	d.tick()
+	d.tick()
 
 	if d.TotalUploaded() <= 0 {
 		t.Error("TotalUploaded should be > 0 after two ticks")
@@ -300,4 +328,39 @@ func TestIsWithinSchedule(t *testing.T) {
 	}
 
 	_ = sameDayInside // suppress unused warning if skipped
+}
+
+func TestNoLeechersProduceARealZeroPlateau(t *testing.T) {
+	t.Parallel()
+
+	cfg := newTestConfig(100, 200, true, config.SpeedModelUniform)
+	d := NewDispatcher(cfg, NewRandomSpeedProvider(100_000, 200_000), nil)
+	d.RegisterTorrent("quiet", 0)
+	d.UpdatePeers("quiet", 4, 0)
+
+	d.mu.Lock()
+	got := d.computeTorrentSpeed("quiet", 150_000, 1)
+	d.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("speed with no leechers = %d, want a true zero", got)
+	}
+}
+
+func TestWarmupStartsAtZeroWithoutArtificialFloor(t *testing.T) {
+	t.Parallel()
+
+	cfg := newTestConfig(100, 200, true, config.SpeedModelUniform)
+	d := NewDispatcher(cfg, NewRandomSpeedProvider(100_000, 200_000), nil)
+	d.RegisterTorrent("warming", 0)
+	d.UpdatePeers("warming", 1, 1)
+
+	d.mu.Lock()
+	now := time.Now()
+	d.flows["warming"].warmupStartedAt = now.Add(time.Second)
+	baseSpeed := d.flows["warming"].sample(now, false)
+	got := d.computeTorrentSpeed("warming", baseSpeed, 1)
+	d.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("speed before warmup begins = %d, want 0", got)
+	}
 }

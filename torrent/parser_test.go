@@ -1,6 +1,9 @@
 package torrent
 
 import (
+	"crypto/sha1"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +64,30 @@ func TestParseRealTorrents(t *testing.T) {
 			t.Logf("name=%s size=%d pieces=%d hash=%s urls=%d",
 				tor.Name, tor.Size, tor.PieceCount, tor.InfoHashHex, len(tor.AnnounceURLs))
 		})
+	}
+}
+
+func TestParseFileRetainsExactInfoDictionaryForMetadataExchange(t *testing.T) {
+	t.Parallel()
+
+	info := []byte("d6:lengthi4e4:name4:test12:piece lengthi4e6:pieces20:01234567890123456789e")
+	trackerURL := "https://tracker.example.com/announce"
+	metainfo := append([]byte(fmt.Sprintf("d8:announce%d:%s4:info", len(trackerURL), trackerURL)), info...)
+	metainfo = append(metainfo, 'e')
+	path := filepath.Join(t.TempDir(), "metadata.torrent")
+	if err := os.WriteFile(path, metainfo, 0o600); err != nil {
+		t.Fatalf("write torrent: %v", err)
+	}
+
+	tor, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if string(tor.InfoBytes) != string(info) {
+		t.Fatalf("InfoBytes = %q, want exact bencoded info dictionary %q", tor.InfoBytes, info)
+	}
+	if got := sha1.Sum(tor.InfoBytes); got != tor.InfoHash {
+		t.Fatalf("SHA-1(InfoBytes) = %x, want %x", got, tor.InfoHash)
 	}
 }
 

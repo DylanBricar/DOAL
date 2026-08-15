@@ -1,9 +1,34 @@
 package config
 
 import (
+	"math"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestValidationRejectsResourceExhaustingValues(t *testing.T) {
+	base := Config{
+		MinUploadRate:    1,
+		MaxUploadRate:    2,
+		SimultaneousSeed: 1,
+		Client:           "x.client",
+		SpeedModel:       SpeedModelOrganic,
+		PeerResponseMode: PeerResponseModeNone,
+	}
+
+	tooMany := base
+	tooMany.SimultaneousSeed = 1_000_000
+	if err := tooMany.Validate(); err == nil {
+		t.Fatal("resource-exhausting simultaneousSeed was accepted")
+	}
+
+	overflow := base
+	overflow.MaxUploadRate = math.MaxInt64
+	if err := overflow.Validate(); err == nil {
+		t.Fatal("upload rate that overflows bytes/s conversion was accepted")
+	}
+}
 
 // TestLoadAndValidate verifies that the real config.json loads and passes validation.
 func TestLoadAndValidate(t *testing.T) {
@@ -127,16 +152,28 @@ func TestValidationErrors(t *testing.T) {
 			func(c *Config) { c.PeerResponseMode = "UNKNOWN" },
 		},
 		{
-			"negative MinSpeedWhenNoLeechers",
-			func(c *Config) { c.MinSpeedWhenNoLeechers = -1 },
-		},
-		{
 			"ScheduleStartHour out of range when schedule enabled",
 			func(c *Config) { c.EnableSchedule = true; c.ScheduleStartHour = 25 },
 		},
 		{
 			"ScheduleEndHour out of range when schedule enabled",
 			func(c *Config) { c.EnableSchedule = true; c.ScheduleEndHour = -1 },
+		},
+		{
+			"DHT bootstrap without port",
+			func(c *Config) { c.DHTBootstrapNodes = []string{"router.example.com"} },
+		},
+		{
+			"lab sybil ring below minimum",
+			func(c *Config) { c.EnableLabSybilRing = true; c.LabSybilPeers = 1 },
+		},
+		{
+			"lab sybil ring above hard limit",
+			func(c *Config) { c.EnableLabSybilRing = true; c.LabSybilPeers = 9 },
+		},
+		{
+			"port rotation would diverge from listeners",
+			func(c *Config) { c.EnablePortRotation = true },
 		},
 	}
 
@@ -148,6 +185,41 @@ func TestValidationErrors(t *testing.T) {
 				t.Errorf("expected validation error for %q, got nil", tc.name)
 			}
 		})
+	}
+}
+
+func TestValidLabSybilRing(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		MinUploadRate:      1,
+		MaxUploadRate:      2,
+		SimultaneousSeed:   1,
+		Client:             "x.client",
+		SpeedModel:         SpeedModelOrganic,
+		PeerResponseMode:   PeerResponseModeBitfield,
+		EnableLabSybilRing: true,
+		LabSybilPeers:      4,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("bounded lab ring should be valid: %v", err)
+	}
+}
+
+func TestValidDHTBootstrapNodesOnAnyDomain(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		MinUploadRate:     1,
+		MaxUploadRate:     2,
+		SimultaneousSeed:  1,
+		Client:            "x.client",
+		SpeedModel:        SpeedModelOrganic,
+		PeerResponseMode:  PeerResponseModeBitfield,
+		DHTBootstrapNodes: []string{"dht.example.com:6881", "router.example.net:6881", "127.0.0.1:6882", "10.0.0.2:6883", "[2001:db8::1]:6884"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid DHT bootstraps on arbitrary domains should be accepted: %v", err)
 	}
 }
 
@@ -195,13 +267,13 @@ func TestValidAllPeerResponseModes(t *testing.T) {
 // checked when EnableSchedule is true.
 func TestScheduleHoursNotValidatedWhenDisabled(t *testing.T) {
 	cfg := Config{
-		MinUploadRate:    1,
-		MaxUploadRate:    2,
-		SimultaneousSeed: 1,
-		Client:           "x.client",
-		SpeedModel:       SpeedModelOrganic,
-		PeerResponseMode: PeerResponseModeNone,
-		EnableSchedule:   false,
+		MinUploadRate:     1,
+		MaxUploadRate:     2,
+		SimultaneousSeed:  1,
+		Client:            "x.client",
+		SpeedModel:        SpeedModelOrganic,
+		PeerResponseMode:  PeerResponseModeNone,
+		EnableSchedule:    false,
 		ScheduleStartHour: 99, // would be invalid if schedule were on
 		ScheduleEndHour:   -5,
 	}
@@ -215,5 +287,56 @@ func TestLoadNonExistentFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.json")
 	if err == nil {
 		t.Error("Load on non-existent path should return an error")
+	}
+}
+
+func TestLoadDefaultsSimulatedDownloadToEnabled(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := []byte(`{
+  "minUploadRate": 0,
+  "maxUploadRate": 100,
+  "simultaneousSeed": 1,
+  "client": "test.client",
+  "speedModel": "ORGANIC",
+  "peerResponseMode": "NONE"
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.SimulateDownload {
+		t.Fatal("SimulateDownload should default to true when omitted")
+	}
+}
+
+func TestLoadPreservesExplicitDisabledSimulatedDownload(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := []byte(`{
+  "minUploadRate": 0,
+  "maxUploadRate": 100,
+  "simultaneousSeed": 1,
+  "client": "test.client",
+  "speedModel": "ORGANIC",
+  "peerResponseMode": "NONE",
+  "simulateDownload": false
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SimulateDownload {
+		t.Fatal("explicit simulateDownload=false should be preserved")
 	}
 }

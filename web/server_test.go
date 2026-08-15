@@ -119,25 +119,17 @@ func TestServerHandleSTOMPHeartbeat(t *testing.T) {
 	s.handleSTOMP(c, []byte(""))
 }
 
-// TestHandleConnectNoToken verifies that when secretToken is "x" (disabled),
-// authentication is granted before sendFrame is called (which requires a real conn).
-// We verify the authenticated state is set via the token-check logic in handleConnect.
+// TestHandleConnectNoToken verifies that an explicitly empty token remains
+// available to embedded tests which do not expose the server publicly.
 func TestHandleConnectNoToken(t *testing.T) {
-	// When the token is "x", the auth check is skipped entirely.
-	// We validate this by inspecting the branch: token == "x" means no check.
-	s := NewServer(0, "doal", "x", nil)
+	s := NewServer(0, "doal", "", nil)
 
-	// Verify the server has the expected token value so the skipped-check branch is correct.
-	if s.secretToken != "x" {
-		t.Fatalf("expected secretToken x, got %q", s.secretToken)
+	if s.secretToken != "" {
+		t.Fatalf("expected empty secretToken, got %q", s.secretToken)
 	}
-
-	// Confirm the auth bypass condition: secretToken == "x" means auth is skipped.
-	// The actual handleConnect panics without a real WebSocket conn (sendFrame needs it),
-	// so we only test the precondition/configuration here.
-	authBypassed := s.secretToken == "" || s.secretToken == "x"
+	authBypassed := s.secretToken == ""
 	if !authBypassed {
-		t.Error("expected auth to be bypassed for token 'x'")
+		t.Error("expected auth to be bypassed only for an empty embedded-test token")
 	}
 }
 

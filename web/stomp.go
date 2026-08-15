@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -29,6 +30,9 @@ type stompFrame struct {
 // parseFrame parses a raw STOMP frame from bytes.
 // STOMP frame format: COMMAND\nheader:value\n...\n\nbody\0
 func parseFrame(data []byte) (*stompFrame, error) {
+	if int64(len(data)) > maxWebSocketMessageBytes {
+		return nil, fmt.Errorf("stomp: frame exceeds %d bytes", maxWebSocketMessageBytes)
+	}
 	// Strip trailing null byte(s)
 	raw := strings.TrimRight(string(data), "\x00")
 
@@ -187,12 +191,9 @@ func (s *Server) handleSTOMP(c *Client, raw []byte) {
 
 func (s *Server) handleConnect(c *Client, frame *stompFrame) {
 	// Check auth token if one is configured.
-	if s.secretToken != "" && s.secretToken != "x" {
-		token := frame.headers["X-Joal-Auth-Token"]
-		if token != s.secretToken {
-			c.sendError("Authentication failed")
-			return
-		}
+	if !authTokenValid(s.secretToken, frame.headers["X-Joal-Auth-Token"]) {
+		c.sendError("Authentication failed")
+		return
 	}
 
 	c.mu.Lock()
@@ -212,6 +213,13 @@ func (s *Server) handleConnect(c *Client, frame *stompFrame) {
 	}
 }
 
+func authTokenValid(configured, provided string) bool {
+	if configured == "" || configured == "x" {
+		return true
+	}
+	return len(provided) == len(configured) && subtle.ConstantTimeCompare([]byte(provided), []byte(configured)) == 1
+}
+
 func (s *Server) handleSubscribe(c *Client, frame *stompFrame) {
 	c.mu.Lock()
 	if !c.authenticated {
@@ -223,6 +231,10 @@ func (s *Server) handleSubscribe(c *Client, frame *stompFrame) {
 	subID := frame.headers["id"]
 	dest := frame.headers["destination"]
 	if subID == "" || dest == "" {
+		c.mu.Unlock()
+		return
+	}
+	if _, exists := c.subscriptions[subID]; !exists && len(c.subscriptions) >= maxSubscriptionsPerClient {
 		c.mu.Unlock()
 		return
 	}

@@ -73,21 +73,21 @@ const (
 
 // Incoming STOMP destination constants.
 const (
-	DestGlobalStart       = "/doal/global/start"
-	DestGlobalStop        = "/doal/global/stop"
-	DestConfigSave        = "/doal/config/save"
-	DestTorrentsUpload    = "/doal/torrents/upload"
-	DestTorrentsDelete    = "/doal/torrents/delete"
-	DestTorrentsPause     = "/doal/torrents/pause"
-	DestTorrentsResume    = "/doal/torrents/resume"
-	DestTrackerPause      = "/doal/tracker/pause"
-	DestTrackerResume     = "/doal/tracker/resume"
-	DestInitializeMe      = "/doal/initialize-me"
-	DestConfig            = "/config"
-	DestTorrents          = "/torrents"
-	DestGlobal            = "/global"
-	DestSpeed             = "/speed"
-	DestAnnounce          = "/announce"
+	DestGlobalStart    = "/doal/global/start"
+	DestGlobalStop     = "/doal/global/stop"
+	DestConfigSave     = "/doal/config/save"
+	DestTorrentsUpload = "/doal/torrents/upload"
+	DestTorrentsDelete = "/doal/torrents/delete"
+	DestTorrentsPause  = "/doal/torrents/pause"
+	DestTorrentsResume = "/doal/torrents/resume"
+	DestTrackerPause   = "/doal/tracker/pause"
+	DestTrackerResume  = "/doal/tracker/resume"
+	DestInitializeMe   = "/doal/initialize-me"
+	DestConfig         = "/config"
+	DestTorrents       = "/torrents"
+	DestGlobal         = "/global"
+	DestSpeed          = "/speed"
+	DestAnnounce       = "/announce"
 )
 
 // Handlers bridges the web layer to the core engine.
@@ -235,30 +235,33 @@ func (h *Handlers) handleGlobalStop() {
 
 // configSaveRequest is the JSON body sent to /doal/config/save.
 type configSaveRequest struct {
-	MinUploadRate             int64   `json:"minUploadRate"`
-	MaxUploadRate             int64   `json:"maxUploadRate"`
-	SimultaneousSeed          int     `json:"simultaneousSeed"`
-	Client                    string  `json:"client"`
-	KeepTorrentWithZeroLeechers bool  `json:"keepTorrentWithZeroLeechers"`
-	UploadRatioTarget         float64 `json:"uploadRatioTarget"`
-	SpeedModel                string  `json:"speedModel"`
-	AnnounceJitterPercent     int     `json:"announceJitterPercent"`
-	PeerResponseMode          string  `json:"peerResponseMode"`
-	PerTorrentBandwidth       bool    `json:"perTorrentBandwidth"`
-	MinSpeedWhenNoLeechers    int64   `json:"minSpeedWhenNoLeechers"`
-	SimulateDownload          bool    `json:"simulateDownload"`
-	EnableBurstSpeed          bool    `json:"enableBurstSpeed"`
-	EnablePortRotation        bool    `json:"enablePortRotation"`
-	RotateClientOnRestart     bool    `json:"rotateClientOnRestart"`
-	SwarmAwareSpeed           bool    `json:"swarmAwareSpeed"`
-	EnableSchedule            bool    `json:"enableSchedule"`
-	ScheduleStartHour         int     `json:"scheduleStartHour"`
-	ScheduleEndHour           int     `json:"scheduleEndHour"`
-	ProxyEnabled              bool    `json:"proxyEnabled"`
-	ProxyType                 string  `json:"proxyType"`
-	ProxyURL                  string  `json:"proxyUrl"`
-	AnnounceIP                string  `json:"announceIp"`
-	MaxAnnounceFailures       int     `json:"maxAnnounceFailures"`
+	MinUploadRate               int64    `json:"minUploadRate"`
+	MaxUploadRate               int64    `json:"maxUploadRate"`
+	SimultaneousSeed            int      `json:"simultaneousSeed"`
+	Client                      string   `json:"client"`
+	KeepTorrentWithZeroLeechers bool     `json:"keepTorrentWithZeroLeechers"`
+	UploadRatioTarget           float64  `json:"uploadRatioTarget"`
+	SpeedModel                  string   `json:"speedModel"`
+	AnnounceJitterPercent       int      `json:"announceJitterPercent"`
+	PeerResponseMode            string   `json:"peerResponseMode"`
+	PerTorrentBandwidth         bool     `json:"perTorrentBandwidth"`
+	SimulateDownload            bool     `json:"simulateDownload"`
+	EnableBurstSpeed            bool     `json:"enableBurstSpeed"`
+	EnablePortRotation          bool     `json:"enablePortRotation"`
+	RotateClientOnRestart       bool     `json:"rotateClientOnRestart"`
+	SwarmAwareSpeed             bool     `json:"swarmAwareSpeed"`
+	EnableSchedule              bool     `json:"enableSchedule"`
+	ScheduleStartHour           int      `json:"scheduleStartHour"`
+	ScheduleEndHour             int      `json:"scheduleEndHour"`
+	ProxyEnabled                bool     `json:"proxyEnabled"`
+	ProxyType                   string   `json:"proxyType"`
+	ProxyURL                    string   `json:"proxyUrl"`
+	AnnounceIP                  string   `json:"announceIp"`
+	MaxAnnounceFailures         int      `json:"maxAnnounceFailures"`
+	DHTBootstrapNodes           []string `json:"dhtBootstrapNodes"`
+	EnableLabSybilRing          bool     `json:"enableLabSybilRing"`
+	LabSybilPeers               int      `json:"labSybilPeers"`
+	EnablePieceProxy            bool     `json:"enablePieceProxy"`
 }
 
 func (h *Handlers) handleConfigSave(data []byte) {
@@ -273,30 +276,33 @@ func (h *Handlers) handleConfigSave(data []byte) {
 	}
 
 	cfg := &config.Config{
-		MinUploadRate:             req.MinUploadRate,
-		MaxUploadRate:             req.MaxUploadRate,
-		SimultaneousSeed:          req.SimultaneousSeed,
-		Client:                    req.Client,
+		MinUploadRate:               req.MinUploadRate,
+		MaxUploadRate:               req.MaxUploadRate,
+		SimultaneousSeed:            req.SimultaneousSeed,
+		Client:                      req.Client,
 		KeepTorrentWithZeroLeechers: req.KeepTorrentWithZeroLeechers,
-		UploadRatioTarget:         req.UploadRatioTarget,
-		SpeedModel:                req.SpeedModel,
-		AnnounceJitterPercent:     req.AnnounceJitterPercent,
-		PeerResponseMode:          req.PeerResponseMode,
-		PerTorrentBandwidth:       req.PerTorrentBandwidth,
-		MinSpeedWhenNoLeechers:    req.MinSpeedWhenNoLeechers,
-		SimulateDownload:          req.SimulateDownload,
-		EnableBurstSpeed:          req.EnableBurstSpeed,
-		EnablePortRotation:        req.EnablePortRotation,
-		RotateClientOnRestart:     req.RotateClientOnRestart,
-		SwarmAwareSpeed:           req.SwarmAwareSpeed,
-		EnableSchedule:            req.EnableSchedule,
-		ScheduleStartHour:         req.ScheduleStartHour,
-		ScheduleEndHour:           req.ScheduleEndHour,
-		ProxyEnabled:              req.ProxyEnabled,
-		ProxyType:                 req.ProxyType,
-		ProxyURL:                  req.ProxyURL,
-		AnnounceIP:                req.AnnounceIP,
-		MaxAnnounceFailures:       req.MaxAnnounceFailures,
+		UploadRatioTarget:           req.UploadRatioTarget,
+		SpeedModel:                  req.SpeedModel,
+		AnnounceJitterPercent:       req.AnnounceJitterPercent,
+		PeerResponseMode:            req.PeerResponseMode,
+		PerTorrentBandwidth:         req.PerTorrentBandwidth,
+		SimulateDownload:            req.SimulateDownload,
+		EnableBurstSpeed:            req.EnableBurstSpeed,
+		EnablePortRotation:          req.EnablePortRotation,
+		RotateClientOnRestart:       req.RotateClientOnRestart,
+		SwarmAwareSpeed:             req.SwarmAwareSpeed,
+		EnableSchedule:              req.EnableSchedule,
+		ScheduleStartHour:           req.ScheduleStartHour,
+		ScheduleEndHour:             req.ScheduleEndHour,
+		ProxyEnabled:                req.ProxyEnabled,
+		ProxyType:                   req.ProxyType,
+		ProxyURL:                    req.ProxyURL,
+		AnnounceIP:                  req.AnnounceIP,
+		MaxAnnounceFailures:         req.MaxAnnounceFailures,
+		DHTBootstrapNodes:           append([]string(nil), req.DHTBootstrapNodes...),
+		EnableLabSybilRing:          req.EnableLabSybilRing,
+		LabSybilPeers:               req.LabSybilPeers,
+		EnablePieceProxy:            req.EnablePieceProxy,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -555,8 +561,12 @@ func (h *Handlers) BroadcastTrackerStats(stats map[string]int64) {
 		if len(t.AnnounceURLs) > 0 {
 			u := t.AnnounceURLs[0]
 			domain := u
-			if idx := strings.Index(u, "://"); idx >= 0 { domain = u[idx+3:] }
-			if idx := strings.Index(domain, "/"); idx >= 0 { domain = domain[:idx] }
+			if idx := strings.Index(u, "://"); idx >= 0 {
+				domain = u[idx+3:]
+			}
+			if idx := strings.Index(domain, "/"); idx >= 0 {
+				domain = domain[:idx]
+			}
 			trackerTorrents[domain]++
 			if !pausedMap[t.InfoHashHex] {
 				trackerPaused[domain] = false // at least one active
@@ -575,7 +585,7 @@ func (h *Handlers) BroadcastTrackerStats(stats map[string]int64) {
 		entries = append(entries, trackerEntry{
 			Domain: domain, TotalUploaded: total,
 			TorrentCount: trackerTorrents[domain],
-			Paused: trackerPaused[domain],
+			Paused:       trackerPaused[domain],
 		})
 	}
 	h.server.SendToAll(DestSpeed, StompMessage{

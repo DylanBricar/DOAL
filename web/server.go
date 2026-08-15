@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+const (
+	maxWebSocketMessageBytes  int64 = 1 << 20
+	maxWebSocketClients             = 64
+	maxSubscriptionsPerClient       = 128
 )
 
 //go:embed static/*
@@ -26,6 +34,7 @@ type Server struct {
 	clients     map[*Client]bool
 	mu          sync.RWMutex
 	onMessage   func(clientID string, msgType string, data []byte)
+	clientSlots chan struct{}
 
 	upgrader websocket.Upgrader
 }
@@ -39,10 +48,11 @@ func NewServer(port int, pathPrefix, secretToken string, onMessage func(string, 
 		secretToken: secretToken,
 		clients:     make(map[*Client]bool),
 		onMessage:   onMessage,
+		clientSlots: make(chan struct{}, maxWebSocketClients),
 	}
 
 	s.upgrader = websocket.Upgrader{
-		CheckOrigin:  func(r *http.Request) bool { return true },
+		CheckOrigin:  websocketOriginAllowed,
 		Subprotocols: []string{"v12.stomp", "v11.stomp"},
 	}
 
@@ -77,20 +87,59 @@ func (s *Server) Start() error {
 		http.NotFound(w, r)
 	})
 
-	addr := fmt.Sprintf(":%d", s.port)
+	addr := s.listenAddress()
 	fmt.Printf("server: listening on %s, UI at %s/ui/\n", addr, prefix)
-	return http.ListenAndServe(addr, mux)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	return server.ListenAndServe()
+}
+
+func (s *Server) listenAddress() string {
+	if s.secretToken == "" || s.secretToken == "x" {
+		return fmt.Sprintf("127.0.0.1:%d", s.port)
+	}
+	return fmt.Sprintf(":%d", s.port)
+}
+
+func websocketOriginAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	expectedScheme := "http"
+	if r.TLS != nil {
+		expectedScheme = "https"
+	}
+	return strings.EqualFold(parsed.Scheme, expectedScheme) && strings.EqualFold(parsed.Host, r.Host)
 }
 
 // handleWebSocket upgrades an HTTP connection to WebSocket and runs the STOMP
 // read loop for that client.
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !s.reserveClientSlot() {
+		http.Error(w, "too many WebSocket clients", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.releaseClientSlot()
 	fmt.Printf("server: WebSocket upgrade request from %s for %s\n", r.RemoteAddr, r.URL.Path)
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Printf("server: WebSocket upgrade failed: %v\n", err)
 		return
 	}
+	conn.SetReadLimit(maxWebSocketMessageBytes)
+	_ = conn.UnderlyingConn().SetDeadline(time.Time{})
 	fmt.Printf("server: WebSocket connected: %s\n", r.RemoteAddr)
 
 	id := fmt.Sprintf("client-%d", atomic.AddUint64(&clientIDCounter, 1))
@@ -109,6 +158,22 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		s.handleSTOMP(c, msg)
+	}
+}
+
+func (s *Server) reserveClientSlot() bool {
+	select {
+	case s.clientSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseClientSlot() {
+	select {
+	case <-s.clientSlots:
+	default:
 	}
 }
 

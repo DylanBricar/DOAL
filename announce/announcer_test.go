@@ -183,6 +183,42 @@ func TestParseTrackerResponseNotDict(t *testing.T) {
 	}
 }
 
+// TestParseTrackerResponseCompactPeers verifies BEP 23 compact peer decoding —
+// the seed pool the piece proxy leeches from.
+func TestParseTrackerResponseCompactPeers(t *testing.T) {
+	// Two peers: 1.2.3.4:6881 and 5.6.7.8:51413.
+	compact := []byte{1, 2, 3, 4, 0x1A, 0xE1, 5, 6, 7, 8, 0xC8, 0xD5}
+	data := []byte("d8:completei2e10:incompletei1e8:intervali900e5:peers12:")
+	data = append(data, compact...)
+	data = append(data, 'e')
+
+	resp, err := parseTrackerResponse(data)
+	if err != nil {
+		t.Fatalf("parseTrackerResponse: %v", err)
+	}
+	if len(resp.Peers) != 2 {
+		t.Fatalf("want 2 peers, got %d", len(resp.Peers))
+	}
+	if resp.Peers[0].IP != "1.2.3.4" || resp.Peers[0].Port != 6881 {
+		t.Errorf("peer 0: want 1.2.3.4:6881, got %s:%d", resp.Peers[0].IP, resp.Peers[0].Port)
+	}
+	if resp.Peers[1].IP != "5.6.7.8" || resp.Peers[1].Port != 51413 {
+		t.Errorf("peer 1: want 5.6.7.8:51413, got %s:%d", resp.Peers[1].IP, resp.Peers[1].Port)
+	}
+}
+
+func TestParseCompactPeersCapsResult(t *testing.T) {
+	compact := make([]byte, 0, 600*6)
+	const port = 6000
+	for i := 0; i < 600; i++ {
+		compact = append(compact, 127, 0, byte(i>>8), byte(i), byte(port>>8), byte(port&0xff))
+	}
+	peers := parseCompactPeers(compact, 4)
+	if got := len(peers); got != maxAnnouncePeers {
+		t.Fatalf("parsed peers=%d, limit=%d", got, maxAnnouncePeers)
+	}
+}
+
 // TestDecodeBencodeDictSimple verifies the internal dict decoder.
 func TestDecodeBencodeDictSimple(t *testing.T) {
 	data := []byte("d8:intervali1800ee")

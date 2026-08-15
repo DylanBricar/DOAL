@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,11 +13,25 @@ import (
 	"doal/torrent"
 )
 
+const (
+	maxTrackerResponseBytes int64 = 4 << 20
+	maxAnnouncePeers              = 512
+)
+
+// Peer is a single peer address returned by a tracker.
+type Peer struct {
+	IP   string
+	Port int
+}
+
 // AnnounceResponse holds the parsed response from a tracker announce.
 type AnnounceResponse struct {
 	Interval int
 	Seeders  int
 	Leechers int
+	// Peers is the list of peers the tracker returned (compact form). It is the
+	// pool of real seeds the piece proxy can leech verified pieces from.
+	Peers []Peer
 }
 
 // Announcer manages the announce lifecycle for a single torrent.
@@ -72,6 +87,10 @@ func (a *Announcer) Announce(params AnnounceParams) (*AnnounceResponse, error) {
 
 // announceToTracker performs a single HTTP GET to a specific tracker URL.
 func (a *Announcer) announceToTracker(trackerURL string, params AnnounceParams) (*AnnounceResponse, error) {
+	if !IsSupportedTrackerURL(trackerURL) {
+		return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerURL)
+	}
+
 	fullURL := a.client.BuildAnnounceURL(trackerURL, params)
 
 	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
@@ -109,14 +128,22 @@ func (a *Announcer) announceToTracker(trackerURL string, params AnnounceParams) 
 func readBody(resp *http.Response) ([]byte, error) {
 	reader := resp.Body
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		gz, err := gzip.NewReader(resp.Body)
+		gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxTrackerResponseBytes+1))
 		if err != nil {
 			return nil, fmt.Errorf("creating gzip reader: %w", err)
 		}
 		defer gz.Close()
 		reader = gz
 	}
-	return io.ReadAll(reader)
+	limited := io.LimitReader(reader, maxTrackerResponseBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxTrackerResponseBytes {
+		return nil, fmt.Errorf("tracker response exceeds %d bytes", maxTrackerResponseBytes)
+	}
+	return body, nil
 }
 
 // parseTrackerResponse decodes a bencoded tracker response and extracts
@@ -137,7 +164,35 @@ func parseTrackerResponse(data []byte) (*AnnounceResponse, error) {
 		Leechers: intFromDict(dict, "incomplete"),
 	}
 
+	// Compact peers (BEP 23): "peers" is a byte string of 6-byte IPv4 entries,
+	// "peers6" is 18-byte IPv6 entries. The dict decoder above already captured
+	// them as raw strings. Dictionary-model peer lists are not parsed because
+	// every DOAL client profile announces with compact=1.
+	if p, ok := dict["peers"]; ok {
+		resp.Peers = append(resp.Peers, parseCompactPeers([]byte(p), 4)...)
+	}
+	if p6, ok := dict["peers6"]; ok {
+		resp.Peers = append(resp.Peers, parseCompactPeers([]byte(p6), 16)...)
+	}
+
 	return resp, nil
+}
+
+// parseCompactPeers decodes a BEP 23 compact peer string. ipLen is 4 for IPv4
+// ("peers") or 16 for IPv6 ("peers6"); each entry is ipLen bytes of address
+// followed by a 2-byte big-endian port.
+func parseCompactPeers(b []byte, ipLen int) []Peer {
+	entryLen := ipLen + 2
+	var peers []Peer
+	for i := 0; i+entryLen <= len(b) && len(peers) < maxAnnouncePeers; i += entryLen {
+		ip := net.IP(b[i : i+ipLen]).String()
+		port := int(b[i+ipLen])<<8 | int(b[i+ipLen+1])
+		if port == 0 || ip == "<nil>" {
+			continue
+		}
+		peers = append(peers, Peer{IP: ip, Port: port})
+	}
+	return peers
 }
 
 // decodeBencodeDict decodes the top-level bencoded dictionary from raw bytes.

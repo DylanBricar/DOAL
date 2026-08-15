@@ -1,6 +1,6 @@
 # DOAL
 
-**BitTorrent fake-seeding tool** with 18 anti-detection features. Written in Go — single binary, zero dependencies, ~10 MB, ~20 MB RAM.
+**BitTorrent tracker test client** with protocol and traffic-simulation features. Written in Go — single binary, zero dependencies, ~10 MB, ~20 MB RAM.
 
 > Fork of [JOAL](https://github.com/anthonyraymond/joal) (Java), entirely rewritten in Go for performance and portability.
 
@@ -42,7 +42,7 @@ Then open **http://localhost:5082/** (auto-redirects to the UI)
 | `--conf` | (required) | Path to config directory (contains `config.json`, `clients/`, `torrents/`) |
 | `--port` | `5081` | Web server port |
 | `--path-prefix` | `doal` | URL prefix (UI at `/{prefix}/ui/`) |
-| `--secret-token` | `x` | Auth token for WebSocket. Use `x` to disable authentication (default). Set a real token to require auth. |
+| `--secret-token` | required | WebSocket auth token. The explicit local mode `x` disables authentication and binds the Web UI to `127.0.0.1` only. A real token allows network listening. |
 
 ### Directory structure
 
@@ -70,11 +70,10 @@ All settings are configurable via the web UI or directly in `config.json`.
 | `maxUploadRate` | int | `1000` | Maximum upload speed in kB/s per torrent |
 | `simultaneousSeed` | int | `5` | Number of torrents seeded simultaneously |
 | `uploadRatioTarget` | float | `-1` | Target ratio (-1 = unlimited, >0 = auto-pause at ratio) |
-| `minSpeedWhenNoLeechers` | int | `50` | Minimum speed in kB/s when 0 leechers (0 = disable) |
 | `keepTorrentWithZeroLeechers` | bool | `false` | Continue seeding torrents with 0 leechers |
 | `maxAnnounceFailures` | int | `5` | Remove torrent after N consecutive announce failures (0 = unlimited) |
 
-### Anti-Detection
+### Traffic simulation
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -84,8 +83,7 @@ All settings are configurable via the web UI or directly in `config.json`.
 | `peerResponseMode` | string | `BITFIELD` | How to respond to peer connections (`NONE`, `HANDSHAKE_ONLY`, `BITFIELD`, `FAKE_DATA`) |
 | `perTorrentBandwidth` | bool | `true` | Each torrent gets independent speed (vs shared) |
 | `enableBurstSpeed` | bool | `true` | Simulate upload speed bursts (1.5-3x) |
-| `simulateDownload` | bool | `false` | Report download progress to tracker (left > 0 then completed) |
-| `enablePortRotation` | bool | `false` | Change announced port every 30-60 min |
+| `simulateDownload` | bool | `true` | Report a conserved download lifecycle (`downloaded + left = size`) with warmup, stalls and a single completed event |
 | `rotateClientOnRestart` | bool | `false` | Pick a random client profile on each start |
 | `swarmAwareSpeed` | bool | `true` | Boost speed +20% for torrents with high leecher demand |
 
@@ -97,6 +95,16 @@ All settings are configurable via the web UI or directly in `config.json`.
 | `proxyType` | string | `socks5` | Proxy type (`socks5` or `http`) |
 | `proxyUrl` | string | `""` | Proxy URL (e.g. `socks5://user:pass@host:1080`) |
 | `announceIp` | string | `""` | Override IP reported to trackers (empty = auto-detect) |
+| `enablePieceProxy` | bool | `false` | On-demand piece proxy: leech a requested piece live from a real seed, SHA-1 verify it, then serve it. Only meaningful in `FAKE_DATA` mode. See below. |
+| `dhtBootstrapNodes` | string[] | `[]` | Explicit DHT entry points; any valid DNS hostname or IP address with a port is accepted |
+| `enableLabSybilRing` | bool | `false` | Enable matched counterparty accounting inside the configured tracker lab |
+| `labSybilPeers` | int | `0` | Counterparties in the lab ring; must be 2-8 when enabled |
+
+Tracker announces accept any domain or IP address over HTTP(S). Malformed URLs,
+embedded credentials and unsupported schemes remain rejected; redirects are
+validated by the same rules. DHT traffic accepts any explicitly configured
+valid `host:port` endpoint. The lab ring is disabled by default and cannot
+exceed eight counterparties.
 
 ### Schedule
 
@@ -108,30 +116,50 @@ All settings are configurable via the web UI or directly in `config.json`.
 
 ---
 
-## Anti-Detection Features (18)
+## Protocol and traffic simulation features
 
 | # | Feature | Description |
 |---|---------|-------------|
 | 1 | **Client Emulation** | 90+ client profiles with correct User-Agent, peer_id, key, query string order |
-| 2 | **uTLS Fingerprint** | TLS handshake matches the emulated client (Chrome/Firefox/iOS profiles) |
-| 3 | **Organic Speed** | Random walk with momentum, Gaussian noise, micro-jitter, occasional drops |
-| 4 | **Speed Warmup** | Gradual ramp from 0 to 100% over 60 seconds after start |
-| 5 | **Burst Speed** | Random speed spikes (1.5-3x) simulating new leecher arrival |
+| 2 | **uTLS Fingerprint** | Browser presets or an OpenSSL-style libtorrent ClientHello, with HTTP/1.1-only ALPN |
+| 3 | **Organic Speed** | Independent heavy-tailed random walk, momentum, micro-jitter and real zero plateaus per torrent |
+| 4 | **Speed Warmup** | Per-torrent randomized delay and 45-180 second ramp from a true zero |
+| 5 | **Burst Speed** | Per-torrent decorrelated speed spikes (1.5-3x) |
 | 6 | **Upload Byte Jitter** | Random noise on accumulated bytes to avoid exact multiples |
 | 7 | **Announce Jitter** | Random variation on tracker announce intervals |
 | 8 | **PeerWire Protocol** | Responds to incoming peer connections with valid BT handshake |
 | 9 | **BEP 10 Extension** | Extension protocol handshake (ut_metadata, ut_pex) |
-| 10 | **PEX Messages** | Periodic Peer Exchange messages to appear as real peer |
-| 11 | **DHT Node** | Minimal DHT node responding to ping/find_node/get_peers |
+| 10 | **PEX Messages** | Negotiated, rate-limited PEX containing newly observed live peers |
+| 11 | **DHT Node** | Private participatory DHT with ping/find_node/get_peers/announce_peer and token validation |
 | 12 | **Keep-Alive** | 120-second keep-alive messages on peer connections |
 | 13 | **Reserved Bytes** | Correct DHT + Extension Protocol + Fast Extension bits in handshake |
 | 14 | **SimulateDownload** | Reports download progress with correct left/downloaded/completed events |
-| 15 | **Port Rotation** | Changes announced port every 30-60 minutes |
-| 16 | **Client Rotation** | Switches to a different client profile on each restart |
-| 17 | **SHA-1 Piece Serving** | Serves real file data for piece verification (when data file is present) |
-| 18 | **Announce Stagger** | Spreads initial announces over 0-15 seconds to avoid timestamp clustering |
+| 15 | **Client Rotation** | Switches to a different client profile on each restart |
+| 16 | **SHA-1 Piece Serving** | Serves real file data for piece verification (when data file is present) |
+| 17 | **Announce Stagger** | Spreads initial announces over 0-15 seconds to avoid timestamp clustering |
+| 18 | **On-Demand Piece Proxy** | When probed for a piece it lacks locally, leeches that piece live from a real seed, SHA-1 verifies it, then serves it (`enablePieceProxy`, `FAKE_DATA` mode) |
+| 19 | **Metadata Exchange** | Serves exact torrent info bytes through negotiated `ut_metadata` blocks |
+| 20 | **Matched Lab Ring** | Optional bounded counterparties whose downloads exactly match newly observed upload bytes |
 
 ---
+
+## On-Demand Piece Proxy (isolated lab capability)
+
+Peer data is fail-closed. Without a verified local file, the server advertises
+an empty bitfield and rejects unavailable requests instead of manufacturing
+random bytes.
+
+With `enablePieceProxy: true` (and `peerResponseMode: FAKE_DATA`), on a cache
+miss DOAL instead:
+
+1. picks a real seed from the tracker's announce response (compact peer list),
+2. connects to it and leeches the requested piece,
+3. checks the piece against the torrent's own SHA-1 hash,
+4. stores it in a bounded cache and serves only the verified bytes.
+
+The proxy is disabled by default and restricted to the configured lab scope. It
+cannot provide a piece absent from every upstream source; that request is
+rejected. Its memory cache is globally bounded and cleared during shutdown.
 
 ## Web UI
 
@@ -159,10 +187,11 @@ To enable real piece serving (passes tracker SHA-1 checks):
      MyMovie.2024.1080p.torrent    # torrent metadata
      MyMovie.2024.1080p.mkv        # actual file content
    ```
-2. DOAL auto-detects the pair on start (matched by file size)
-3. When a peer requests a piece, DOAL serves the real bytes instead of random data
+2. DOAL verifies the complete file size and every piece SHA-1 before registration
+3. When a peer requests a valid block, DOAL serves bytes from that verified file
 
-Without the data file, DOAL falls back to random bytes (FAKE_DATA mode).
+Without a verified data source, DOAL advertises no available pieces and rejects
+piece requests.
 
 ---
 
@@ -220,7 +249,7 @@ This is a complete rewrite of [JOAL](https://github.com/anthonyraymond/joal) by 
 
 **Key differences from JOAL:**
 - Rewritten from Java to Go (9 MB binary vs 33 MB JAR + 200 MB JVM)
-- 18 anti-detection features (vs 6 in original)
+- Expanded protocol and traffic-simulation coverage
 - uTLS fingerprint spoofing
 - DHT/PEX participation
 - SHA-1 piece verification

@@ -3,6 +3,7 @@ package peerwire
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,14 +13,15 @@ import (
 )
 
 const (
+	maxPeerConnections = 256
 	// ModeNone drops incoming connections immediately after the OS accepts them.
 	ModeNone = "NONE"
 	// ModeHandshakeOnly completes the BitTorrent handshake and then closes.
 	ModeHandshakeOnly = "HANDSHAKE_ONLY"
 	// ModeBitfield completes the handshake, then sends a bitfield + unchoke.
 	ModeBitfield = "BITFIELD"
-	// ModeFakeData completes handshake, sends bitfield + unchoke, and serves
-	// random data for any piece requests received.
+	// ModeFakeData completes the peer session and serves only data that can be
+	// verified from a registered file or the optional verified-piece provider.
 	ModeFakeData = "FAKE_DATA"
 
 	// btProtocol is the fixed 19-byte protocol identifier in BitTorrent handshakes.
@@ -37,26 +39,54 @@ const (
 	msgPiece = byte(7)
 	// msgRequest is the BitTorrent message ID for request messages.
 	msgRequest = byte(6)
+	// msgRejectRequest is the Fast Extension response for an unavailable block.
+	msgRejectRequest = byte(16)
 )
+
+var errVerifiedPieceUnavailable = errors.New("peerwire: verified piece unavailable")
 
 // TorrentInfo holds the metadata the peerwire server needs to respond to peers.
 type TorrentInfo struct {
 	InfoHash   [20]byte
 	PieceCount int
 	PeerID     []byte
+
+	// Piece metadata used only by the on-demand piece proxy. Leave zero when the
+	// proxy is disabled.
+	PieceHashes [][20]byte
+	PieceLength int64
+	TotalSize   int64
+	Metadata    []byte
 }
 
 // Server listens for incoming BitTorrent peer connections and responds
 // according to the configured peerResponseMode.
 type Server struct {
-	port           int
-	mode           string
-	clientName     string
-	activeTorrents sync.Map // infoHashHex -> *TorrentInfo
-	pieceCache     *PieceCache
-	listener       net.Listener
-	stop           chan struct{}
-	wg             sync.WaitGroup
+	port            int
+	mode            string
+	clientName      string
+	activeTorrents  sync.Map // infoHashHex -> *TorrentInfo
+	pieceCache      *PieceCache
+	pieceProxy      *PieceProxy // nil unless the piece proxy is enabled
+	dhtPort         int
+	livePeers       map[string]map[string]Peer
+	livePeersMu     sync.RWMutex
+	listener        net.Listener
+	lifecycleMu     sync.Mutex
+	stop            chan struct{}
+	stopOnce        sync.Once
+	connections     map[net.Conn]struct{}
+	connectionsMu   sync.Mutex
+	connectionSlots chan struct{}
+	wg              sync.WaitGroup
+}
+
+// EnableDHT links the PeerWire capability bits and PORT message to an active
+// local DHT UDP listener. Call before Start.
+func (s *Server) EnableDHT(port int) {
+	if port > 0 && port <= 65535 {
+		s.dhtPort = port
+	}
 }
 
 // NewServer creates a Server that will listen on the given port using the
@@ -64,22 +94,45 @@ type Server struct {
 // clientName is used in the BEP 10 extension handshake (e.g. "qBittorrent 5.0.0").
 func NewServer(port int, mode string, clientName string) *Server {
 	return &Server{
-		port:       port,
-		mode:       mode,
-		clientName: clientName,
-		pieceCache: NewPieceCache(),
-		stop:       make(chan struct{}),
+		port:            port,
+		mode:            mode,
+		clientName:      clientName,
+		pieceCache:      NewPieceCache(),
+		livePeers:       make(map[string]map[string]Peer),
+		stop:            make(chan struct{}),
+		connections:     make(map[net.Conn]struct{}),
+		connectionSlots: make(chan struct{}, maxPeerConnections),
 	}
 }
 
 // RegisterDataFile associates a torrent with a real file for SHA-1 verified piece serving.
-func (s *Server) RegisterDataFile(infoHashHex string, filePath string, pieceLength int64) {
-	s.pieceCache.RegisterFile(infoHashHex, filePath, pieceLength)
+func (s *Server) RegisterDataFile(infoHashHex string, filePath string, pieceLength, totalSize int64, pieceHashes [][20]byte) error {
+	return s.pieceCache.RegisterFile(infoHashHex, filePath, pieceLength, totalSize, pieceHashes)
+}
+
+// EnablePieceProxy activates on-demand piece leeching so cache misses are served
+// with verified data fetched from real seeds. Call before RegisterTorrent.
+func (s *Server) EnablePieceProxy() {
+	if s.pieceProxy == nil {
+		s.pieceProxy = NewPieceProxy()
+	}
+}
+
+// UpdatePeers feeds the latest tracker-returned seeds to the piece proxy so it
+// knows where to leech pieces from. No-op when the proxy is disabled.
+func (s *Server) UpdatePeers(infoHashHex string, peers []Peer) {
+	if s.pieceProxy != nil {
+		s.pieceProxy.SetPeers(infoHashHex, peers)
+	}
 }
 
 // RegisterTorrent makes a torrent eligible for peer connections.
 func (s *Server) RegisterTorrent(info TorrentInfo) {
-	s.activeTorrents.Store(fmt.Sprintf("%x", info.InfoHash), &info)
+	hashHex := fmt.Sprintf("%x", info.InfoHash)
+	s.activeTorrents.Store(hashHex, &info)
+	if s.pieceProxy != nil && len(info.PieceHashes) > 0 {
+		s.pieceProxy.RegisterTorrent(hashHex, info.InfoHash, info.PeerID, info.PieceHashes, info.PieceLength, info.TotalSize)
+	}
 }
 
 // UnregisterTorrent removes a torrent from the active set.
@@ -88,11 +141,21 @@ func (s *Server) UnregisterTorrent(infoHashHex string) {
 	if s.pieceCache != nil {
 		s.pieceCache.Unregister(infoHashHex)
 	}
+	if s.pieceProxy != nil {
+		s.pieceProxy.Unregister(infoHashHex)
+	}
 }
 
 // Start binds the listener and begins accepting peer connections in the
 // background. It returns an error if the port cannot be bound.
 func (s *Server) Start() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	select {
+	case <-s.stop:
+		return fmt.Errorf("peerwire: server has been stopped")
+	default:
+	}
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
 	if err != nil {
 		return fmt.Errorf("peerwire: listening on port %d: %w", s.port, err)
@@ -107,11 +170,31 @@ func (s *Server) Start() error {
 // Stop closes the listener and waits for all active connection handlers to
 // finish.
 func (s *Server) Stop() {
-	close(s.stop)
-	if s.listener != nil {
-		s.listener.Close()
-	}
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.lifecycleMu.Lock()
+		if s.listener != nil {
+			_ = s.listener.Close()
+		}
+		s.lifecycleMu.Unlock()
+		s.connectionsMu.Lock()
+		for conn := range s.connections {
+			_ = conn.Close()
+		}
+		s.connectionsMu.Unlock()
+		if s.pieceProxy != nil {
+			s.pieceProxy.Close()
+		}
+	})
 	s.wg.Wait()
+	s.pieceCache.Close()
+	s.activeTorrents.Range(func(key, _ any) bool {
+		s.activeTorrents.Delete(key)
+		return true
+	})
+	s.livePeersMu.Lock()
+	clear(s.livePeers)
+	s.livePeersMu.Unlock()
 }
 
 // acceptLoop runs in a background goroutine, accepting new TCP connections and
@@ -131,12 +214,47 @@ func (s *Server) acceptLoop() {
 			}
 		}
 
+		select {
+		case <-s.stop:
+			_ = conn.Close()
+			return
+		default:
+		}
+		if !s.reserveConnection() {
+			_ = conn.Close()
+			continue
+		}
+		s.connectionsMu.Lock()
+		s.connections[conn] = struct{}{}
+		s.connectionsMu.Unlock()
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
+			defer s.releaseConnection()
+			defer func() {
+				s.connectionsMu.Lock()
+				delete(s.connections, c)
+				s.connectionsMu.Unlock()
+			}()
 			defer c.Close()
 			s.handleConnection(c)
 		}(conn)
+	}
+}
+
+func (s *Server) reserveConnection() bool {
+	select {
+	case s.connectionSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseConnection() {
+	select {
+	case <-s.connectionSlots:
+	default:
 	}
 }
 
@@ -171,6 +289,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 	info := val.(*TorrentInfo)
+	remoteSupportsDHT := buf[27]&0x01 != 0
 
 	// 4. Send response handshake.
 	peerID := info.PeerID
@@ -181,9 +300,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 	}
 
-	handshake := buildHandshake(infoHash, peerID)
+	handshake := buildHandshakeWithDHT(infoHash, peerID, s.dhtPort > 0)
 	if _, err := conn.Write(handshake); err != nil {
 		return
+	}
+	if remoteSupportsDHT && s.dhtPort > 0 {
+		if _, err := conn.Write(buildDHTPortMessage(s.dhtPort)); err != nil {
+			return
+		}
 	}
 
 	if s.mode == ModeHandshakeOnly {
@@ -191,12 +315,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	// 4b. Send BEP 10 extension handshake (we advertised extension protocol support).
-	if err := s.sendExtensionHandshake(conn, s.clientName); err != nil {
+	if err := s.sendExtensionHandshake(conn, s.clientName, len(info.Metadata)); err != nil {
 		return
 	}
 
-	// 5. Send bitfield (all pieces marked as available).
-	if err := sendBitfield(conn, info.PieceCount); err != nil {
+	// 5. Advertise pieces only when a fully verified local file is registered.
+	if err := sendBitfield(conn, info.PieceCount, s.pieceCache.HasFile(infoHashHex)); err != nil {
 		return
 	}
 
@@ -205,37 +329,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	if s.mode == ModeBitfield {
-		s.keepAliveLoop(conn)
-		return
-	}
-
-	// FAKE_DATA mode: handle piece requests (real data if available, random otherwise).
-	if s.mode == ModeFakeData {
-		s.servePiecesWithCache(conn, info.PieceCount, infoHashHex)
-	}
+	s.servePeerMessages(conn, info, infoHashHex)
 }
 
-// reservedBytes matches typical libtorrent-based clients (qBittorrent, Deluge):
-// DHT (bit 0x01 of byte 7), Fast Extension (bit 0x04 of byte 7),
-// Extension Protocol (bit 0x10 of byte 5).
-var reservedBytes = [8]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x05}
+// baseReservedBytes advertises Fast Extension (bit 0x04 of byte 7) and
+// Extension Protocol (bit 0x10 of byte 5). DHT is added only for a live node.
+var baseReservedBytes = [8]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x04}
 
 // sendExtensionHandshake sends a BEP 10 extension protocol handshake.
 // This is required because we advertise extension protocol support in our
 // reserved bytes (bit 0x10 of byte 5).
-func (s *Server) sendExtensionHandshake(conn net.Conn, clientName string) error {
-	// Bencode dictionary: {m: {ut_metadata: 1, ut_pex: 2}, p: <port>, v: <client>, reqq: 250}
-	payload := fmt.Sprintf("d1:md11:ut_metadatai1e6:ut_pexi2ee1:pi%de1:v%d:%s4:reqqi250ee",
-		s.port, len(clientName), clientName)
-
-	msgLen := 2 + len(payload) // 1 byte msg_id + 1 byte ext_id + payload
-	buf := make([]byte, 4+msgLen)
-	binary.BigEndian.PutUint32(buf[0:4], uint32(msgLen))
-	buf[4] = 20 // extended message
-	buf[5] = 0  // handshake (ext msg id 0)
-	copy(buf[6:], []byte(payload))
-
+func (s *Server) sendExtensionHandshake(conn net.Conn, clientName string, metadataSize int) error {
+	buf := buildExtensionHandshake(s.port, clientName, metadataSize)
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := conn.Write(buf)
 	return err
@@ -243,17 +348,32 @@ func (s *Server) sendExtensionHandshake(conn net.Conn, clientName string) error 
 
 // buildHandshake constructs the 68-byte BitTorrent handshake response.
 func buildHandshake(infoHash [20]byte, peerID []byte) []byte {
+	return buildHandshakeWithDHT(infoHash, peerID, false)
+}
+
+func buildHandshakeWithDHT(infoHash [20]byte, peerID []byte, dhtEnabled bool) []byte {
 	var h [handshakeLen]byte
 	h[0] = 19
 	copy(h[1:20], btProtocol)
-	copy(h[20:28], reservedBytes[:])
+	reserved := baseReservedBytes
+	if dhtEnabled {
+		reserved[7] |= 0x01
+	}
+	copy(h[20:28], reserved[:])
 	copy(h[28:48], infoHash[:])
 	copy(h[48:68], peerID[:20])
 	return h[:]
 }
 
-// sendBitfield sends a BitTorrent bitfield message with all pieces set to 1.
-func sendBitfield(w io.Writer, pieceCount int) error {
+func buildDHTPortMessage(port int) []byte {
+	message := []byte{0, 0, 0, 3, 9, 0, 0}
+	binary.BigEndian.PutUint16(message[5:], uint16(port))
+	return message
+}
+
+// sendBitfield sends a BitTorrent bitfield. Bits are set only when all pieces
+// are backed by a locally verified file.
+func sendBitfield(w io.Writer, pieceCount int, allAvailable bool) error {
 	if pieceCount <= 0 {
 		return nil
 	}
@@ -261,9 +381,10 @@ func sendBitfield(w io.Writer, pieceCount int) error {
 	byteCount := int(math.Ceil(float64(pieceCount) / 8.0))
 	bitfield := make([]byte, byteCount)
 
-	// Set all bits for present pieces.
-	for i := 0; i < pieceCount; i++ {
-		bitfield[i/8] |= 1 << uint(7-i%8)
+	if allAvailable {
+		for i := 0; i < pieceCount; i++ {
+			bitfield[i/8] |= 1 << uint(7-i%8)
+		}
 	}
 
 	// Message format: 4-byte length prefix + 1-byte message ID + payload.
@@ -289,137 +410,18 @@ func sendUnchoke(w io.Writer) error {
 	return err
 }
 
-// drainConnection reads and discards incoming data until the connection closes
-// or an error occurs.
-// keepAliveLoop sends a BitTorrent keep-alive (4 zero bytes) every 120 seconds
-// and discards any incoming data, for up to 10 minutes of inactivity.
-// Every other keep-alive tick it also sends a PEX message (BEP 11).
-func (s *Server) keepAliveLoop(conn net.Conn) {
-	defer conn.Close()
-	ticker := time.NewTicker(120 * time.Second)
-	defer ticker.Stop()
-	deadline := time.Now().Add(10 * time.Minute)
-	tick := 0
-
-	// Read incoming data in background so we don't block on the ticker.
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		buf := make([]byte, 4096)
-		for {
-			conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-			if _, err := conn.Read(buf); err != nil {
-				return
-			}
-		}
-	}()
-
-	for time.Now().Before(deadline) {
-		select {
-		case <-s.stop:
-			return
-		case <-readDone:
-			return
-		case <-ticker.C:
-			tick++
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			// Keep-alive: 4-byte length prefix of zero.
-			if _, err := conn.Write([]byte{0, 0, 0, 0}); err != nil {
-				return
-			}
-			// Send PEX every other tick.
-			if tick%2 == 0 {
-				if err := s.sendPEXMessage(conn); err != nil {
-					return
-				}
-			}
-		}
-	}
-}
-
-// sendPEXMessage sends a BEP 11 peer exchange message with no peers.
-// Extension message ID 2 matches the ut_pex value advertised in the
-// BEP 10 extension handshake.
-func (s *Server) sendPEXMessage(conn net.Conn) error {
-	// Minimal PEX payload: empty added, added.f and dropped lists.
-	payload := "d5:added0:7:added.f0:7:dropped0:e"
-	msgLen := 2 + len(payload) // 1 byte msg_id(20) + 1 byte ext_id(2) + payload
-	buf := make([]byte, 4+msgLen)
-	binary.BigEndian.PutUint32(buf[0:4], uint32(msgLen))
-	buf[4] = 20 // extended message
-	buf[5] = 2  // ut_pex extension ID as advertised in handshake
-	copy(buf[6:], []byte(payload))
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err := conn.Write(buf)
-	return err
-}
-
-// servePiecesWithCache reads incoming BT request messages and responds with
-// real piece data from the cache when available, random data otherwise.
-func (s *Server) servePiecesWithCache(conn net.Conn, pieceCount int, infoHashHex string) {
-	servePiecesInternal(conn, pieceCount, infoHashHex, s.pieceCache)
-}
-
-func servePiecesInternal(conn net.Conn, pieceCount int, infoHashHex string, cache *PieceCache) {
-	lenBuf := make([]byte, 4)
-	for {
-		// Read the 4-byte length prefix.
-		if _, err := io.ReadFull(conn, lenBuf); err != nil {
-			return
-		}
-		msgLen := binary.BigEndian.Uint32(lenBuf)
-
-		if msgLen == 0 {
-			// Keep-alive message.
-			continue
-		}
-
-		if msgLen > 1<<20 {
-			// Refuse unreasonably large messages.
-			return
-		}
-
-		// Read the message body.
-		body := make([]byte, msgLen)
-		if _, err := io.ReadFull(conn, body); err != nil {
-			return
-		}
-
-		msgID := body[0]
-		if msgID != msgRequest {
-			// Ignore non-request messages (interest, have, etc.).
-			continue
-		}
-
-		if len(body) < 13 {
-			continue
-		}
-
-		// request payload: index(4) + begin(4) + length(4)
-		index := binary.BigEndian.Uint32(body[1:5])
-		begin := binary.BigEndian.Uint32(body[5:9])
-		length := binary.BigEndian.Uint32(body[9:13])
-
-		if pieceCount > 0 && int(index) >= pieceCount {
-			continue
-		}
-
-		if err := sendPieceData(conn, index, begin, length, infoHashHex, cache); err != nil {
-			return
-		}
-	}
-}
-
-// sendPieceData writes a BitTorrent piece message, using real data from cache if available.
-func sendPieceData(w io.Writer, index, begin, length uint32, infoHashHex string, cache *PieceCache) error {
+// sendPieceData writes a BitTorrent piece message. It serves, in order of
+// preference: real bytes from a verified local data file, then SHA-1-verified
+// bytes from the optional provider. It fails closed when neither is available.
+func sendPieceData(w io.Writer, index, begin, length uint32, infoHashHex string, cache *PieceCache, proxy *PieceProxy) error {
 	const maxBlock = 32 * 1024
-	if length > maxBlock {
-		length = maxBlock
+	if length == 0 || length > maxBlock {
+		return fmt.Errorf("peerwire: invalid block length %d", length)
 	}
 
 	var block []byte
 
-	// Try real data from cache first
+	// 1. Real data from a local file.
 	if cache != nil && infoHashHex != "" {
 		data, err := cache.GetPiece(infoHashHex, int(index), int(begin), int(length))
 		if err == nil && data != nil && len(data) == int(length) {
@@ -427,12 +429,17 @@ func sendPieceData(w io.Writer, index, begin, length uint32, infoHashHex string,
 		}
 	}
 
-	// Fallback to random data
-	if block == nil {
-		block = make([]byte, length)
-		if _, err := rand.Read(block); err != nil {
-			return err
+	// 2. On-demand piece proxy: leech + SHA-1 verify from a real seed.
+	if block == nil && proxy != nil && infoHashHex != "" {
+		data, err := proxy.GetBlock(infoHashHex, int(index), int(begin), int(length))
+		if err == nil && len(data) == int(length) {
+			block = data
 		}
+	}
+
+	// Never manufacture bytes for a piece we cannot verify.
+	if block == nil {
+		return errVerifiedPieceUnavailable
 	}
 
 	// piece message: 4-byte len + id(1) + index(4) + begin(4) + data
@@ -460,5 +467,16 @@ func sendPieceData(w io.Writer, index, begin, length uint32, infoHashHex string,
 	}
 
 	_, err := w.Write(block)
+	return err
+}
+
+func sendRejectRequest(w io.Writer, index, begin, length uint32) error {
+	msg := make([]byte, 17)
+	binary.BigEndian.PutUint32(msg[0:4], 13)
+	msg[4] = msgRejectRequest
+	binary.BigEndian.PutUint32(msg[5:9], index)
+	binary.BigEndian.PutUint32(msg[9:13], begin)
+	binary.BigEndian.PutUint32(msg[13:17], length)
+	_, err := w.Write(msg)
 	return err
 }

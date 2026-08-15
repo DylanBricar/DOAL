@@ -17,6 +17,7 @@ type Torrent struct {
 	PieceCount   int
 	PieceLength  int64
 	PieceHashes  [][20]byte
+	InfoBytes    []byte
 	AnnounceURLs []string
 	FilePath     string
 }
@@ -38,7 +39,7 @@ func ParseFile(path string) (*Torrent, error) {
 		return nil, fmt.Errorf("torrent: top-level bencode value is not a dictionary in %q", path)
 	}
 
-	infoHash, infoRaw, err := extractInfoHash(data)
+	infoHash, infoRaw, infoBytes, err := extractInfoHash(data)
 	if err != nil {
 		return nil, fmt.Errorf("torrent: %w", err)
 	}
@@ -71,6 +72,7 @@ func ParseFile(path string) (*Torrent, error) {
 		PieceCount:   pieceCount,
 		PieceLength:  pieceLength,
 		PieceHashes:  pieceHashes,
+		InfoBytes:    infoBytes,
 		AnnounceURLs: announceURLs,
 		FilePath:     path,
 	}
@@ -80,23 +82,23 @@ func ParseFile(path string) (*Torrent, error) {
 
 // extractInfoHash finds the "info" key in the raw bencode bytes, re-encodes
 // the value span, and SHA-1 hashes it.
-func extractInfoHash(data []byte) ([20]byte, any, error) {
+func extractInfoHash(data []byte) ([20]byte, any, []byte, error) {
 	// Locate "4:info" in the byte stream.
 	marker := []byte("4:info")
 	idx := indexBytes(data, marker)
 	if idx < 0 {
-		return [20]byte{}, nil, fmt.Errorf("info key not found in torrent data")
+		return [20]byte{}, nil, nil, fmt.Errorf("info key not found in torrent data")
 	}
 
 	valueStart := idx + len(marker)
 	value, end, err := decodeBencode(data, valueStart)
 	if err != nil {
-		return [20]byte{}, nil, fmt.Errorf("decoding info dictionary: %w", err)
+		return [20]byte{}, nil, nil, fmt.Errorf("decoding info dictionary: %w", err)
 	}
 
-	infoBytes := data[valueStart:end]
+	infoBytes := append([]byte(nil), data[valueStart:end]...)
 	hash := sha1.Sum(infoBytes)
-	return hash, value, nil
+	return hash, value, infoBytes, nil
 }
 
 // extractAnnounceURLs collects tracker URLs from "announce" and "announce-list".

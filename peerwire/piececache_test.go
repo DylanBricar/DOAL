@@ -16,10 +16,14 @@ func TestRealPieceVerification(t *testing.T) {
 	dataFile := ""
 	entries, _ := os.ReadDir("../torrents")
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".torrent") { continue }
+		if !strings.HasSuffix(e.Name(), ".torrent") {
+			continue
+		}
 		base := strings.TrimSuffix(e.Name(), ".torrent")
 		for _, d := range entries {
-			if d.IsDir() || strings.HasSuffix(d.Name(), ".torrent") { continue }
+			if d.IsDir() || strings.HasSuffix(d.Name(), ".torrent") {
+				continue
+			}
 			dBase := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
 			if dBase == base {
 				torrentFile = filepath.Join("../torrents", e.Name())
@@ -27,7 +31,9 @@ func TestRealPieceVerification(t *testing.T) {
 				break
 			}
 		}
-		if torrentFile != "" { break }
+		if torrentFile != "" {
+			break
+		}
 	}
 
 	// Skip if no matching pair found
@@ -91,7 +97,9 @@ func TestRealPieceVerification(t *testing.T) {
 
 	// Test the PieceCache
 	cache := NewPieceCache()
-	cache.RegisterFile(tor.InfoHashHex, dataFile, tor.PieceLength)
+	if err := cache.RegisterFile(tor.InfoHashHex, dataFile, tor.PieceLength, tor.Size, tor.PieceHashes); err != nil {
+		t.Fatalf("RegisterFile: %v", err)
+	}
 
 	// Read piece 0 via cache and verify
 	block, err := cache.GetPiece(tor.InfoHashHex, 0, 0, int(tor.PieceLength))

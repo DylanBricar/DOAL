@@ -41,7 +41,7 @@ func fetchPublicIP() string {
 		if err != nil {
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 128))
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -56,24 +56,24 @@ func fetchPublicIP() string {
 
 // Engine holds all running subsystems and coordinates start/stop.
 type Engine struct {
-	cfg          *config.Config
-	confDir      string
-	watcher      *torrent.Watcher
-	handlers     *web.Handlers
-	clientsDir   string
-	torrentsDir  string
+	cfg         *config.Config
+	confDir     string
+	watcher     *torrent.Watcher
+	handlers    *web.Handlers
+	clientsDir  string
+	torrentsDir string
 
-	seeding        bool
-	mu             sync.RWMutex
-	dispatcher     *bandwidth.Dispatcher
-	scheduler      *announce.Scheduler
-	peerWire       *peerwire.Server
-	dhtNode        *dht.Node
-	clientConfig   *announce.ClientConfig
-	cancelSeed     context.CancelFunc
-	cancelWatch    context.CancelFunc
+	seeding      bool
+	mu           sync.RWMutex
+	dispatcher   *bandwidth.Dispatcher
+	scheduler    *announce.Scheduler
+	peerWire     *peerwire.Server
+	dhtNode      *dht.Node
+	clientConfig *announce.ClientConfig
+	cancelSeed   context.CancelFunc
+	cancelWatch  context.CancelFunc
 
-	announceStatesMu sync.Mutex                  // protects announceStates only
+	announceStatesMu sync.Mutex                    // protects announceStates only
 	announceStates   map[string]*web.AnnounceState // infoHashHex -> state
 }
 
@@ -178,6 +178,19 @@ func (e *Engine) Start() error {
 		func(infoHashHex string, resp *announce.AnnounceResponse) {
 			slog.Info("announce ok", "hash", infoHashHex[:12], "seeders", resp.Seeders, "leechers", resp.Leechers, "interval", resp.Interval)
 			e.dispatcher.UpdatePeers(infoHashHex, resp.Seeders, resp.Leechers)
+
+			// Feed real seed addresses to the piece proxy (no-op if disabled).
+			e.mu.RLock()
+			pw := e.peerWire
+			e.mu.RUnlock()
+			if pw != nil && len(resp.Peers) > 0 {
+				peers := make([]peerwire.Peer, 0, len(resp.Peers))
+				for _, p := range resp.Peers {
+					peers = append(peers, peerwire.Peer{IP: p.IP, Port: p.Port})
+				}
+				pw.UpdatePeers(infoHashHex, peers)
+			}
+
 			now := time.Now().Format(time.RFC3339)
 			// Find the torrent, store state, broadcast to UI
 			for _, t := range e.watcher.GetTorrents() {
@@ -253,30 +266,21 @@ func (e *Engine) Start() error {
 		}()
 	}
 
-	// Port rotation: change port every 30-60 min if enabled
-	if cfg.EnablePortRotation {
-		go func() {
-			for {
-				delay := time.Duration(30+rand.Intn(31)) * time.Minute
-				select {
-				case <-seedCtx.Done():
-					return
-				case <-time.After(delay):
-					newPort := 10000 + rand.Intn(50000)
-					e.scheduler.SetPort(newPort)
-					slog.Info("port rotated", "port", newPort)
-				}
-			}
-		}()
-	}
-
 	// Start PeerWire server on the same port advertised to trackers.
 	e.peerWire = peerwire.NewServer(listenPort, cfg.PeerResponseMode, cc.UserAgent)
+	if cfg.EnablePieceProxy {
+		e.peerWire.EnablePieceProxy()
+		slog.Info("piece proxy enabled (on-demand leech + SHA-1 verify)")
+	}
 	for _, t := range torrents {
 		e.peerWire.RegisterTorrent(peerwire.TorrentInfo{
-			InfoHash:   t.InfoHash,
-			PieceCount: t.PieceCount,
-			PeerID:     []byte(cc.PeerID),
+			InfoHash:    t.InfoHash,
+			PieceCount:  t.PieceCount,
+			PeerID:      []byte(cc.PeerID),
+			PieceHashes: t.PieceHashes,
+			PieceLength: t.PieceLength,
+			TotalSize:   t.Size,
+			Metadata:    t.InfoBytes,
 		})
 	}
 
@@ -297,10 +301,34 @@ func (e *Engine) Start() error {
 				dataPath := filepath.Join(e.torrentsDir, entry.Name())
 				info, _ := entry.Info()
 				if info != nil && info.Size() == t.Size {
-					e.peerWire.RegisterDataFile(t.InfoHashHex, dataPath, t.PieceLength)
-					slog.Info("SHA-1 data registered", "torrent", t.Name, "file", entry.Name(), "pieces", t.PieceCount)
+					if err := e.peerWire.RegisterDataFile(t.InfoHashHex, dataPath, t.PieceLength, t.Size, t.PieceHashes); err != nil {
+						slog.Warn("data file rejected", "torrent", t.Name, "file", entry.Name(), "err", err)
+					} else {
+						slog.Info("SHA-1 data registered", "torrent", t.Name, "file", entry.Name(), "pieces", t.PieceCount)
+					}
 				}
 				break
+			}
+		}
+	}
+	// Start the configured DHT first so PeerWire advertises DHT only when the UDP
+	// listener is genuinely active and can publish its PORT message.
+	if cfg.PeerResponseMode != config.PeerResponseModeNone {
+		e.dhtNode = dht.NewNode(listenPort + 1)
+		if err := e.dhtNode.ConfigureNetwork(listenPort, cfg.DHTBootstrapNodes); err != nil {
+			slog.Warn("DHT configuration failed (non-fatal)", "err", err)
+			e.dhtNode = nil
+		} else {
+			for _, t := range torrents {
+				e.dhtNode.AddTorrent(t.InfoHashHex)
+			}
+			if err := e.dhtNode.Start(); err != nil {
+				slog.Warn("DHT start failed (non-fatal)", "err", err)
+				e.dhtNode = nil
+			} else {
+				dhtPort := e.dhtNode.Addr().Port
+				e.peerWire.EnableDHT(dhtPort)
+				slog.Info("DHT node started", "port", dhtPort)
 			}
 		}
 	}
@@ -309,20 +337,6 @@ func (e *Engine) Start() error {
 			slog.Error("peerwire start", "err", err)
 		}
 	}()
-
-	// Start minimal DHT node on listenPort+1 when peer connections are active.
-	if cfg.PeerResponseMode != config.PeerResponseModeNone {
-		e.dhtNode = dht.NewNode(listenPort + 1)
-		for _, t := range torrents {
-			e.dhtNode.AddTorrent(t.InfoHashHex)
-		}
-		if err := e.dhtNode.Start(); err != nil {
-			slog.Warn("DHT start failed (non-fatal)", "err", err)
-			e.dhtNode = nil
-		} else {
-			slog.Info("DHT node started", "port", listenPort+1)
-		}
-	}
 
 	e.announceStates = make(map[string]*web.AnnounceState)
 	e.seeding = true
@@ -365,15 +379,23 @@ func (e *Engine) GetAnnounceStates() []web.AnnounceState {
 func (e *Engine) PauseTorrent(infoHashHex string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if e.dispatcher != nil { e.dispatcher.PauseTorrent(infoHashHex) }
-	if e.scheduler != nil { e.scheduler.PauseTorrent(infoHashHex) }
+	if e.dispatcher != nil {
+		e.dispatcher.PauseTorrent(infoHashHex)
+	}
+	if e.scheduler != nil {
+		e.scheduler.PauseTorrent(infoHashHex)
+	}
 }
 
 func (e *Engine) ResumeTorrent(infoHashHex string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if e.dispatcher != nil { e.dispatcher.ResumeTorrent(infoHashHex) }
-	if e.scheduler != nil { e.scheduler.ResumeTorrent(infoHashHex) }
+	if e.dispatcher != nil {
+		e.dispatcher.ResumeTorrent(infoHashHex)
+	}
+	if e.scheduler != nil {
+		e.scheduler.ResumeTorrent(infoHashHex)
+	}
 }
 
 func (e *Engine) PauseTracker(domain string) {
@@ -402,7 +424,9 @@ func (e *Engine) GetPausedTorrents() map[string]bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	result := make(map[string]bool)
-	if e.scheduler == nil { return result }
+	if e.scheduler == nil {
+		return result
+	}
 	for _, t := range e.watcher.GetTorrents() {
 		if e.scheduler.IsPaused(t.InfoHashHex) {
 			result[t.InfoHashHex] = true
@@ -415,7 +439,9 @@ func (e *Engine) GetTrackerStats() map[string]int64 {
 	e.mu.RLock()
 	d := e.dispatcher
 	e.mu.RUnlock()
-	if d == nil { return nil }
+	if d == nil {
+		return nil
+	}
 	uploaded := d.UploadedPerTorrent()
 	stats := make(map[string]int64)
 	for _, t := range e.watcher.GetTorrents() {
@@ -686,11 +712,21 @@ func main() {
 		disp := engine.dispatcher
 		sched := engine.scheduler
 		pw := engine.peerWire
+		dhtNode := engine.dhtNode
 		engine.mu.RUnlock()
 		if seeding {
-			if disp != nil { disp.UnregisterTorrent(t.InfoHashHex) }
-			if sched != nil { go sched.RemoveTorrent(t.InfoHashHex) } // async to avoid blocking
-			if pw != nil { pw.UnregisterTorrent(t.InfoHashHex) }
+			if disp != nil {
+				disp.UnregisterTorrent(t.InfoHashHex)
+			}
+			if sched != nil {
+				go sched.RemoveTorrent(t.InfoHashHex)
+			} // async to avoid blocking
+			if pw != nil {
+				pw.UnregisterTorrent(t.InfoHashHex)
+			}
+			if dhtNode != nil {
+				dhtNode.RemoveTorrent(t.InfoHashHex)
+			}
 		}
 	}
 
@@ -721,4 +757,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
