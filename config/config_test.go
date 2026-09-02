@@ -366,6 +366,11 @@ func TestValidationRejectsUnsafeClientAndProxyConfiguration(t *testing.T) {
 			cfg.ProxyType = "socks5"
 			cfg.ProxyURL = "http://proxy.example:8080"
 		}},
+		{name: "proxy without private network opt-in", mutate: func(cfg *Config) {
+			cfg.ProxyEnabled = true
+			cfg.ProxyType = "http"
+			cfg.ProxyURL = "http://proxy.example:8080"
+		}},
 	}
 
 	for _, tc := range tests {
