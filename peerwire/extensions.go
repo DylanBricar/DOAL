@@ -45,10 +45,10 @@ func buildMetadataResponse(extensionID byte, metadata []byte, piece int) ([]byte
 	if piece < 0 {
 		return nil, fmt.Errorf("metadata piece must be non-negative")
 	}
-	start := piece * metadataBlockSize
-	if start >= len(metadata) {
+	if len(metadata) == 0 || piece > (len(metadata)-1)/metadataBlockSize {
 		return nil, fmt.Errorf("metadata piece %d is outside %d bytes", piece, len(metadata))
 	}
+	start := piece * metadataBlockSize
 	end := start + metadataBlockSize
 	if end > len(metadata) {
 		end = len(metadata)

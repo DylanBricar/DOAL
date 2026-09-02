@@ -401,7 +401,7 @@ func TestAnnounceGzipResponse(t *testing.T) {
 func TestDecodeBencodeDictRejectsNegativeStringLength(t *testing.T) {
 	t.Parallel()
 
-	if _, err := decodeBencodeDict([]byte("d4:key-1:xe")); err == nil {
+	if _, err := decodeBencodeDict([]byte("d3:key-1:xe")); err == nil {
 		t.Fatal("negative bencode string length was accepted")
 	}
 }
@@ -409,7 +409,7 @@ func TestDecodeBencodeDictRejectsNegativeStringLength(t *testing.T) {
 func TestDecodeBencodeDictRejectsExcessiveNesting(t *testing.T) {
 	t.Parallel()
 
-	nested := "d4:key" + strings.Repeat("l", 129) + strings.Repeat("e", 129) + "e"
+	nested := "d3:key" + strings.Repeat("l", 129) + strings.Repeat("e", 129) + "e"
 	if _, err := decodeBencodeDict([]byte(nested)); err == nil {
 		t.Fatal("excessively nested tracker response was accepted")
 	}

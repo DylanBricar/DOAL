@@ -16,6 +16,7 @@ import (
 const (
 	maxTrackerResponseBytes int64 = 4 << 20
 	maxAnnouncePeers              = 512
+	maxBencodeDepth               = 128
 )
 
 // Peer is a single peer address returned by a tracker.
@@ -261,16 +262,16 @@ func bencodeReadString(data []byte, offset int) (string, int, error) {
 	}
 
 	lenStr := string(data[offset:colonIdx])
-	length, err := strconv.Atoi(lenStr)
+	length, err := strconv.ParseUint(lenStr, 10, 64)
 	if err != nil {
 		return "", offset, fmt.Errorf("invalid bencode string length %q: %w", lenStr, err)
 	}
 
 	start := colonIdx + 1
-	end := start + length
-	if end > len(data) {
+	if length > uint64(len(data)-start) {
 		return "", offset, fmt.Errorf("bencode string length %d exceeds data", length)
 	}
+	end := start + int(length)
 
 	return string(data[start:end]), end, nil
 }
@@ -295,6 +296,13 @@ func bencodeReadInt(data []byte, offset int) (int64, int, error) {
 
 // bencodeSkip advances past a single bencode value without storing it.
 func bencodeSkip(data []byte, offset int) (int, error) {
+	return bencodeSkipDepth(data, offset, 0)
+}
+
+func bencodeSkipDepth(data []byte, offset, depth int) (int, error) {
+	if depth >= maxBencodeDepth {
+		return offset, fmt.Errorf("bencode nesting exceeds %d levels", maxBencodeDepth)
+	}
 	if offset >= len(data) {
 		return offset, fmt.Errorf("unexpected end of data")
 	}
@@ -305,28 +313,34 @@ func bencodeSkip(data []byte, offset int) (int, error) {
 	case data[offset] == 'd':
 		offset++ // skip 'd'
 		for offset < len(data) && data[offset] != 'e' {
-			next, err := bencodeSkip(data, offset)
+			next, err := bencodeSkipDepth(data, offset, depth+1)
 			if err != nil {
 				return offset, err
 			}
 			offset = next
 			if offset < len(data) && data[offset] != 'e' {
-				next, err = bencodeSkip(data, offset)
+				next, err = bencodeSkipDepth(data, offset, depth+1)
 				if err != nil {
 					return offset, err
 				}
 				offset = next
 			}
 		}
+		if offset >= len(data) {
+			return offset, fmt.Errorf("unterminated bencode dictionary")
+		}
 		return offset + 1, nil
 	case data[offset] == 'l':
 		offset++ // skip 'l'
 		for offset < len(data) && data[offset] != 'e' {
-			next, err := bencodeSkip(data, offset)
+			next, err := bencodeSkipDepth(data, offset, depth+1)
 			if err != nil {
 				return offset, err
 			}
 			offset = next
+		}
+		if offset >= len(data) {
+			return offset, fmt.Errorf("unterminated bencode list")
 		}
 		return offset + 1, nil
 	case data[offset] >= '0' && data[offset] <= '9':

@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
+
+const maxBencodeDepth = 128
 
 // Torrent holds the essential metadata extracted from a .torrent file.
 type Torrent struct {
@@ -202,6 +205,13 @@ outer:
 // decodeBencode decodes one bencode value starting at offset and returns the
 // Go value plus the index of the first byte after the value.
 func decodeBencode(data []byte, offset int) (any, int, error) {
+	return decodeBencodeDepth(data, offset, 0)
+}
+
+func decodeBencodeDepth(data []byte, offset, depth int) (any, int, error) {
+	if depth >= maxBencodeDepth {
+		return nil, offset, fmt.Errorf("bencode nesting exceeds %d levels", maxBencodeDepth)
+	}
 	if offset >= len(data) {
 		return nil, offset, fmt.Errorf("unexpected end of data at offset %d", offset)
 	}
@@ -210,9 +220,9 @@ func decodeBencode(data []byte, offset int) (any, int, error) {
 	case data[offset] == 'i':
 		return decodeInt(data, offset)
 	case data[offset] == 'l':
-		return decodeList(data, offset)
+		return decodeList(data, offset, depth)
 	case data[offset] == 'd':
-		return decodeDict(data, offset)
+		return decodeDict(data, offset, depth)
 	case data[offset] >= '0' && data[offset] <= '9':
 		return decodeString(data, offset)
 	default:
@@ -232,21 +242,9 @@ func decodeInt(data []byte, offset int) (int64, int, error) {
 		return 0, offset, fmt.Errorf("unterminated integer at offset %d", offset)
 	}
 
-	var n int64
-	negative := false
-	start := offset
-	if data[start] == '-' {
-		negative = true
-		start++
-	}
-	for i := start; i < end; i++ {
-		if data[i] < '0' || data[i] > '9' {
-			return 0, offset, fmt.Errorf("invalid digit %q in integer at offset %d", data[i], i)
-		}
-		n = n*10 + int64(data[i]-'0')
-	}
-	if negative {
-		n = -n
+	n, err := strconv.ParseInt(string(data[offset:end]), 10, 64)
+	if err != nil {
+		return 0, offset, fmt.Errorf("invalid integer at offset %d: %w", offset, err)
 	}
 
 	return n, end + 1, nil // +1 to skip 'e'
@@ -262,25 +260,22 @@ func decodeString(data []byte, offset int) (string, int, error) {
 		return "", offset, fmt.Errorf("no colon found in string at offset %d", offset)
 	}
 
-	var length int
-	for i := offset; i < colonIdx; i++ {
-		if data[i] < '0' || data[i] > '9' {
-			return "", offset, fmt.Errorf("invalid length digit %q at offset %d", data[i], i)
-		}
-		length = length*10 + int(data[i]-'0')
+	length, err := strconv.ParseUint(string(data[offset:colonIdx]), 10, 64)
+	if err != nil {
+		return "", offset, fmt.Errorf("invalid string length at offset %d: %w", offset, err)
 	}
 
 	start := colonIdx + 1
-	end := start + length
-	if end > len(data) {
+	if length > uint64(len(data)-start) {
 		return "", offset, fmt.Errorf("string length %d exceeds data at offset %d", length, offset)
 	}
+	end := start + int(length)
 
 	return string(data[start:end]), end, nil
 }
 
 // decodeList decodes a list: l<values>e
-func decodeList(data []byte, offset int) ([]any, int, error) {
+func decodeList(data []byte, offset, depth int) ([]any, int, error) {
 	// skip 'l'
 	offset++
 	var list []any
@@ -293,7 +288,7 @@ func decodeList(data []byte, offset int) ([]any, int, error) {
 			return list, offset + 1, nil
 		}
 
-		val, next, err := decodeBencode(data, offset)
+		val, next, err := decodeBencodeDepth(data, offset, depth+1)
 		if err != nil {
 			return nil, offset, err
 		}
@@ -304,7 +299,7 @@ func decodeList(data []byte, offset int) ([]any, int, error) {
 
 // decodeDict decodes a dictionary: d<key><value>...e
 // Keys are always strings in the bencode spec.
-func decodeDict(data []byte, offset int) (map[string]any, int, error) {
+func decodeDict(data []byte, offset, depth int) (map[string]any, int, error) {
 	// skip 'd'
 	offset++
 	dict := make(map[string]any)
@@ -323,7 +318,7 @@ func decodeDict(data []byte, offset int) (map[string]any, int, error) {
 		}
 		offset = next
 
-		val, next, err := decodeBencode(data, offset)
+		val, next, err := decodeBencodeDepth(data, offset, depth+1)
 		if err != nil {
 			return nil, offset, fmt.Errorf("dictionary value for key %q: %w", key, err)
 		}

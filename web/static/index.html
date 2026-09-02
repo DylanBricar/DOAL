@@ -333,7 +333,20 @@
     <footer class="border-t border-border py-3 text-center text-xs text-muted-foreground">DOAL — Outil de test anti-ratio-cheating</footer>
   </div>
 
-  <!-- No connection modal — auto-connect -->
+  <dialog id="authDialog" class="rounded-xl border border-border bg-card p-0 text-foreground shadow-2xl backdrop:bg-black/80">
+    <form id="authForm" method="dialog" class="w-[min(92vw,28rem)] space-y-4 p-6">
+      <div>
+        <h2 class="text-base font-semibold">Authentification requise</h2>
+        <p class="mt-1 text-sm text-muted-foreground">Saisissez le token configure sur le serveur. Il reste uniquement dans cet onglet.</p>
+      </div>
+      <div>
+        <label for="authToken" class="mb-1.5 block text-xs font-medium text-muted-foreground">Token du serveur</label>
+        <input type="password" id="authToken" name="authToken" autocomplete="off" required class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+        <p id="authError" class="mt-1.5 hidden text-xs text-red-400" role="alert"></p>
+      </div>
+      <button type="submit" class="w-full rounded-md bg-foreground px-3 py-2 text-sm font-medium text-background hover:opacity-90">Se connecter</button>
+    </form>
+  </dialog>
 
   <div class="toast-container" id="toastContainer"></div>
 
@@ -374,6 +387,8 @@
   let state={connected:false,seeding:false,client:null,clientFiles:[],config:null,torrents:{},announcers:{},speeds:{},torrentUploaded:{},totalUploaded:0,history:[],pausedTorrents:{},trackerStats:{}};
   let uploadAccumulator=null;
   let reconnectTimer=null;
+  let authToken=sessionStorage.getItem('doalAuthToken')||'';
+  let awaitingAuth=false;
 
   function startUploadAccumulator(){stopUploadAccumulator();uploadAccumulator=setInterval(()=>{refreshLiveDisplay();},1000);}
   function stopUploadAccumulator(){if(uploadAccumulator){clearInterval(uploadAccumulator);uploadAccumulator=null;}}
@@ -419,8 +434,10 @@
     const wsPath=location.pathname.replace(/\/ui\/?.*$/,'');
     const url=proto+'://'+location.host+wsPath;
     const uid=crypto.randomUUID?crypto.randomUUID():'doal-'+Date.now();
-    stomp=new StompClient(url,{'X-Joal-Username':uid});
+    stomp=new StompClient(url,{'X-Joal-Username':uid,'X-Joal-Auth-Token':authToken});
     stomp.onConnect=()=>{
+      awaitingAuth=false;
+      const authDialog=document.getElementById('authDialog');if(authDialog.open)authDialog.close();
       state.connected=true; updateConnectionUI(); showToast('Connecté','success');
       ['/global','/announce','/config','/torrents','/speed'].forEach(d=>{
         stomp.subscribe(d,(msg)=>{try{handleMessage(JSON.parse(msg.body));}catch(e){console.error('Parse error on',d,e);}},  'client');
@@ -430,13 +447,32 @@
         stomp.unsubscribe(initSub);
       });
     };
-    stomp.onDisconnect=()=>{state.connected=false;state.seeding=false;updateConnectionUI();showToast('Déconnecté du serveur','error');
+    stomp.onDisconnect=()=>{state.connected=false;state.seeding=false;stopUploadAccumulator();updateConnectionUI();showToast('Déconnecté du serveur','error');
       addHistoryEntry('error','Déconnexion','Connexion perdue');
       if(reconnectTimer)clearTimeout(reconnectTimer);
-      reconnectTimer=setTimeout(()=>{reconnectTimer=null;if(!state.connected)connect();},8000);
+      if(!awaitingAuth)reconnectTimer=setTimeout(()=>{reconnectTimer=null;if(!state.connected)connect();},8000);
     };
-    stomp.onError=(e)=>{showToast('Erreur: '+(typeof e==='string'?e:'Vérifiez vos paramètres'),'error');};
+    stomp.onError=(e)=>{const message=typeof e==='string'?e:'Vérifiez vos paramètres';if(message.includes('Authentication failed')){openAuthDialog('Token incorrect.');return;}showToast('Erreur: '+message,'error');};
     stomp.connect();
+  }
+
+  function openAuthDialog(message){
+    awaitingAuth=true;
+    if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+    const dialog=document.getElementById('authDialog'),error=document.getElementById('authError');
+    error.textContent=message||'';error.classList.toggle('hidden',!message);
+    if(!dialog.open)dialog.showModal();
+    document.getElementById('authToken').focus();
+  }
+
+  function setupAuthentication(){
+    document.getElementById('authForm').addEventListener('submit',(event)=>{
+      event.preventDefault();
+      const value=document.getElementById('authToken').value;
+      if(!value){openAuthDialog('Le token est requis.');return;}
+      authToken=value;sessionStorage.setItem('doalAuthToken',value);awaitingAuth=false;
+      document.getElementById('authDialog').close();connect();
+    });
   }
 
   // ===== Message Handler =====
@@ -782,7 +818,7 @@
 
   // ===== Init =====
   window.addEventListener('DOMContentLoaded',()=>{
-    lucide.createIcons(); setupDropzone();
+    lucide.createIcons(); setupDropzone(); setupAuthentication();
     initSpeedChart();
     const savedTheme = localStorage.getItem('doalTheme');
     if (savedTheme === 'light') { document.documentElement.classList.remove('dark'); }
