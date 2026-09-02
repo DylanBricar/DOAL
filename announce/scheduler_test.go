@@ -1,6 +1,7 @@
 package announce
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,32 @@ func TestRemoveWaitsForInFlightAnnounceBeforeStopped(t *testing.T) {
 	defer eventsMu.Unlock()
 	if len(events) != 2 || events[0] != "started" || events[1] != "stopped" {
 		t.Fatalf("announce event order = %q, want [started stopped]", events)
+	}
+}
+
+func TestRemoveTorrentContextDoesNotWaitPastDeadlineForInFlightAnnounce(t *testing.T) {
+	s := newTestScheduler()
+	tor := dummyTorrent("blocked-remove", "12345678901234567890")
+	s.AddTorrent(tor)
+	s.mu.RLock()
+	entry := s.announcers[tor.InfoHashHex]
+	s.mu.RUnlock()
+	entry.mu.Lock()
+	entry.announcing = true
+	entry.announceDone = make(chan struct{})
+	entry.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.RemoveTorrentContext(ctx, tor.InfoHashHex)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("RemoveTorrentContext ignored its deadline while waiting for an announce")
 	}
 }
 

@@ -151,6 +151,24 @@ func TestDispatcherPauseResume(t *testing.T) {
 	}
 }
 
+func TestGlobalBandwidthIsSharedOnlyAcrossEligibleTorrents(t *testing.T) {
+	cfg := newTestConfig(100, 100, false, config.SpeedModelUniform)
+	cfg.KeepTorrentWithZeroLeechers = false
+	d := NewDispatcher(cfg, NewRandomSpeedProvider(100_000, 100_000), nil)
+	for _, hash := range []string{"active", "paused", "idle"} {
+		d.RegisterTorrent(hash, 1<<20)
+		d.flows[hash].warmupStartedAt = time.Now().Add(-10 * time.Minute)
+	}
+	d.UpdatePeers("active", 1, 1)
+	d.UpdatePeers("paused", 1, 1)
+	d.PauseTorrent("paused")
+	d.tick()
+
+	if got := d.GetSpeedSnapshot()["active"]; got != 100_000 {
+		t.Fatalf("eligible torrent speed=%d, want full 100000 B/s", got)
+	}
+}
+
 // TestDispatcherUpdatePeers verifies UpdatePeers doesn't panic and the data is
 // stored (indirectly verified through swarm-aware speed logic in tick).
 func TestDispatcherUpdatePeers(t *testing.T) {

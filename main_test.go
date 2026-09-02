@@ -27,8 +27,10 @@ func TestFetchPublicIPFromValidatesStatusAndAddress(t *testing.T) {
 	if got := fetchPublicIPFrom(context.Background(), server.Client(), []string{server.URL + "/status", server.URL + "/invalid"}); got != "" {
 		t.Fatalf("invalid provider responses produced %q", got)
 	}
-	if got := fetchPublicIPFrom(context.Background(), server.Client(), []string{server.URL + "/valid"}); got != "203.0.113.8" {
-		t.Fatalf("valid provider response produced %q", got)
+	for i := 0; i < 100; i++ {
+		if got := fetchPublicIPFrom(context.Background(), server.Client(), []string{server.URL + "/valid"}); got != "203.0.113.8" {
+			t.Fatalf("iteration %d: valid provider response produced %q", i, got)
+		}
 	}
 }
 

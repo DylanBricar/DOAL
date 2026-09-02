@@ -79,6 +79,13 @@ func TestWebSocketOriginPolicy(t *testing.T) {
 		t.Fatal("cross-origin WebSocket request was accepted")
 	}
 
+	downgrade := httptest.NewRequest(http.MethodGet, "https://dashboard.example.com/doal", nil)
+	downgrade.Host = "dashboard.example.com"
+	downgrade.Header.Set("Origin", "http://dashboard.example.com")
+	if websocketOriginAllowed(downgrade) {
+		t.Fatal("HTTPS WebSocket request accepted a downgraded HTTP origin")
+	}
+
 	nonBrowser := httptest.NewRequest("GET", "http://127.0.0.1/doal", nil)
 	if !websocketOriginAllowed(nonBrowser) {
 		t.Fatal("request without Origin should remain available to local clients")

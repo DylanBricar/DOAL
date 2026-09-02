@@ -91,6 +91,52 @@ func TestParseFileRetainsExactInfoDictionaryForMetadataExchange(t *testing.T) {
 	}
 }
 
+func TestParseFileHashesOnlyTopLevelInfoDictionary(t *testing.T) {
+	t.Parallel()
+
+	comment := "embedded 4:info marker"
+	info := []byte("d6:lengthi4e4:name4:test12:piece lengthi4e6:pieces20:01234567890123456789e")
+	metainfo := append([]byte(fmt.Sprintf("d7:comment%d:%s4:info", len(comment), comment)), info...)
+	metainfo = append(metainfo, 'e')
+	path := filepath.Join(t.TempDir(), "top-level-info.torrent")
+	if err := os.WriteFile(path, metainfo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tor, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if got := sha1.Sum(info); tor.InfoHash != got {
+		t.Fatalf("InfoHash=%x, want top-level info hash %x", tor.InfoHash, got)
+	}
+}
+
+func TestParseFileRejectsTrailingDataAndInvalidPieceMetadata(t *testing.T) {
+	t.Parallel()
+
+	validInfo := "d6:lengthi4e4:name4:test12:piece lengthi4e6:pieces20:01234567890123456789e"
+	cases := map[string]string{
+		"trailing bytes": "d4:info" + validInfo + "ejunk",
+		"partial hash":   "d4:infod6:lengthi4e4:name4:test12:piece lengthi4e6:pieces21:012345678901234567890ee",
+		"zero size":      "d4:infod6:lengthi0e4:name4:test12:piece lengthi4e6:pieces20:01234567890123456789ee",
+		"zero piece len": "d4:infod6:lengthi4e4:name4:test12:piece lengthi0e6:pieces20:01234567890123456789ee",
+	}
+	for name, content := range cases {
+		name, content := name, content
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "invalid.torrent")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseFile(path); err == nil {
+				t.Fatal("invalid torrent metadata was accepted")
+			}
+		})
+	}
+}
+
 // TestParseNonExistentFile verifies an error is returned for a missing path.
 func TestParseNonExistentFile(t *testing.T) {
 	_, err := ParseFile("/nonexistent/path/file.torrent")

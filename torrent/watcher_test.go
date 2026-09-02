@@ -214,6 +214,35 @@ func TestWatcherGetTorrentsReflectsScan(t *testing.T) {
 	}
 }
 
+func TestWatcherReplacementRemovesOldHashBeforeAddingNewOne(t *testing.T) {
+	dir := t.TempDir()
+	path := buildMinimalTorrent(t, dir, "replace.torrent")
+	w, err := NewWatcher(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.fsw.Close()
+	w.handleAdd(path)
+	old := w.GetTorrents()[0]
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = []byte(strings.Replace(string(content), "replace", "changed", 1))
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	w.OnRemove = func(tor *Torrent) { events = append(events, "remove:"+tor.InfoHashHex) }
+	w.OnAdd = func(tor *Torrent) { events = append(events, "add:"+tor.InfoHashHex) }
+	w.handleAdd(path)
+
+	if len(events) != 2 || events[0] != "remove:"+old.InfoHashHex || !strings.HasPrefix(events[1], "add:") {
+		t.Fatalf("replacement callbacks=%q, want old removal before new addition", events)
+	}
+}
+
 // TestWatcherNonTorrentFilesIgnored verifies non-.torrent files are ignored by ScanExisting.
 func TestWatcherNonTorrentFilesIgnored(t *testing.T) {
 	dir := t.TempDir()

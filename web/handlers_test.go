@@ -305,7 +305,7 @@ func TestBroadcastTooManyFailsDoesNotPanic(t *testing.T) {
 	h.BroadcastTooManyFails("abc123")
 }
 
-// TestTorrentPayloadFields verifies that torrentPayload returns all expected keys.
+// TestTorrentPayloadFields verifies that torrentPayload returns only UI fields.
 func TestTorrentPayloadFields(t *testing.T) {
 	t1 := &torrent.Torrent{
 		InfoHashHex:  "deadbeef",
@@ -316,7 +316,7 @@ func TestTorrentPayloadFields(t *testing.T) {
 		FilePath:     "/tmp/my.torrent",
 	}
 	payload := torrentPayload(t1)
-	expected := []string{"infoHash", "name", "size", "pieceCount", "announceURLs", "filePath"}
+	expected := []string{"infoHash", "name", "size", "pieceCount"}
 	for _, key := range expected {
 		if _, ok := payload[key]; !ok {
 			t.Errorf("torrentPayload missing key %q", key)
@@ -327,5 +327,10 @@ func TestTorrentPayloadFields(t *testing.T) {
 	}
 	if payload["name"] != "My Torrent" {
 		t.Errorf("name: want My Torrent, got %v", payload["name"])
+	}
+	for _, secret := range []string{"announceURLs", "filePath"} {
+		if _, ok := payload[secret]; ok {
+			t.Errorf("torrentPayload exposed internal field %q", secret)
+		}
 	}
 }
