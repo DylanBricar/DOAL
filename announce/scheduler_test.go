@@ -244,6 +244,36 @@ func TestRemovedEntrySuppressesLateSuccessCallback(t *testing.T) {
 	}
 }
 
+func TestSuccessCallbackCanPauseTorrentWithoutDeadlock(t *testing.T) {
+	t.Parallel()
+
+	tracker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("d8:intervali60ee"))
+	}))
+	defer tracker.Close()
+
+	s := newTestScheduler()
+	s.httpClient = tracker.Client()
+	tor := dummyTorrent("callback-pause", "13579135791357913579")
+	tor.AnnounceURLs = []string{tracker.URL}
+	s.AddTorrent(tor)
+	s.onSuccess = func(hash string, _ *AnnounceResponse) { s.PauseTorrent(hash) }
+
+	done := make(chan struct{})
+	go func() {
+		s.announceOne(tor.InfoHashHex)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("success callback deadlocked while pausing its torrent")
+	}
+	if !s.IsPaused(tor.InfoHashHex) {
+		t.Fatal("success callback did not pause its torrent")
+	}
+}
+
 // dummyConfig returns a minimal config for scheduler construction.
 func dummyConfig() *config.Config {
 	return &config.Config{

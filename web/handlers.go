@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -470,15 +471,26 @@ func (h *Handlers) handleTrackerResume(data []byte) {
 	}
 	h.engine.ResumeTracker(req.Tracker)
 	for _, t := range h.engine.GetTorrents() {
-		for _, u := range t.AnnounceURLs {
-			if strings.Contains(u, req.Tracker) {
-				h.server.SendToAll(DestAnnounce, StompMessage{Type: "TORRENT_RESUMED", Payload: map[string]interface{}{"infoHash": t.InfoHashHex}})
-				break
-			}
+		if torrentTrackerAuthorityMatches(t, req.Tracker) {
+			h.server.SendToAll(DestAnnounce, StompMessage{Type: "TORRENT_RESUMED", Payload: map[string]interface{}{"infoHash": t.InfoHashHex}})
 		}
 	}
 	h.BroadcastTrackerStats(h.engine.GetTrackerStats())
 	fmt.Printf("handlers: tracker resumed: %s\n", req.Tracker)
+}
+
+func torrentTrackerAuthorityMatches(t *torrent.Torrent, authority string) bool {
+	authority = strings.TrimSpace(strings.TrimSuffix(authority, "."))
+	if t == nil || authority == "" {
+		return false
+	}
+	for _, raw := range t.AnnounceURLs {
+		u, err := url.Parse(raw)
+		if err == nil && strings.EqualFold(strings.TrimSuffix(u.Host, "."), authority) {
+			return true
+		}
+	}
+	return false
 }
 
 // Broadcast helpers — called by the engine to push events to all clients.

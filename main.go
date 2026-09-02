@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -452,25 +453,71 @@ func (e *Engine) ResumeTorrent(infoHashHex string) {
 }
 
 func (e *Engine) PauseTracker(domain string) {
+	var hashes []string
 	for _, t := range e.watcher.GetTorrents() {
-		for _, u := range t.AnnounceURLs {
-			if strings.Contains(u, domain) {
-				e.PauseTorrent(t.InfoHashHex)
-				break
-			}
+		if torrentUsesTracker(t, domain) {
+			hashes = append(hashes, t.InfoHashHex)
 		}
 	}
+	if len(hashes) == 0 {
+		return
+	}
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	e.mu.RLock()
+	seeding := e.seeding
+	sched, disp, pw, dhtNode := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode
+	e.mu.RUnlock()
+	if !seeding || sched == nil {
+		return
+	}
+	if e.pausedSlots == nil {
+		e.pausedSlots = make(map[string]bool)
+	}
+	for _, hash := range hashes {
+		e.pausedSlots[hash] = true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, hash := range hashes {
+		if sched.HasTorrent(hash) {
+			e.deactivateTorrent(ctx, hash, sched, disp, pw, dhtNode)
+		}
+	}
+	e.rebalanceActiveSlotsLocked()
 }
 
 func (e *Engine) ResumeTracker(domain string) {
+	var hashes []string
 	for _, t := range e.watcher.GetTorrents() {
-		for _, u := range t.AnnounceURLs {
-			if strings.Contains(u, domain) {
-				e.ResumeTorrent(t.InfoHashHex)
-				break
-			}
+		if torrentUsesTracker(t, domain) {
+			hashes = append(hashes, t.InfoHashHex)
 		}
 	}
+	if len(hashes) == 0 {
+		return
+	}
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	for _, hash := range hashes {
+		delete(e.failedSlots, hash)
+		delete(e.pausedSlots, hash)
+	}
+	e.rebalanceActiveSlotsLocked()
+}
+
+func torrentUsesTracker(t *torrent.Torrent, authority string) bool {
+	authority = strings.TrimSpace(strings.TrimSuffix(authority, "."))
+	if t == nil || authority == "" {
+		return false
+	}
+	for _, raw := range t.AnnounceURLs {
+		u, err := url.Parse(raw)
+		if err == nil && strings.EqualFold(strings.TrimSuffix(u.Host, "."), authority) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) GetPausedTorrents() map[string]bool {
@@ -842,16 +889,18 @@ func (e *Engine) pauseTorrentRuntime(infoHashHex string) {
 	seeding := e.seeding
 	sched, disp, pw, dhtNode := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode
 	e.mu.RUnlock()
-	if !seeding || sched == nil || !sched.HasTorrent(infoHashHex) {
+	if !seeding || sched == nil {
 		return
 	}
 	if e.pausedSlots == nil {
 		e.pausedSlots = make(map[string]bool)
 	}
 	e.pausedSlots[infoHashHex] = true
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	e.deactivateTorrent(ctx, infoHashHex, sched, disp, pw, dhtNode)
-	cancel()
+	if sched.HasTorrent(infoHashHex) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		e.deactivateTorrent(ctx, infoHashHex, sched, disp, pw, dhtNode)
+		cancel()
+	}
 	e.rebalanceActiveSlotsLocked()
 }
 

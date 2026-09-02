@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"doal/config"
+	"doal/torrent"
 )
 
 func TestFetchPublicIPFromValidatesStatusAndAddress(t *testing.T) {
@@ -70,5 +71,23 @@ func TestRestartBoundConfigDetectsNetworkPolicyChanges(t *testing.T) {
 	next.MaxUploadRate = 500
 	if restartBoundConfigChanged(current, next) {
 		t.Fatal("live bandwidth-only change was incorrectly marked restart-bound")
+	}
+}
+
+func TestTorrentUsesTrackerMatchesAuthorityNotSubstring(t *testing.T) {
+	t.Parallel()
+
+	tor := &torrent.Torrent{AnnounceURLs: []string{
+		"https://tracker.example:8443/secret/announce",
+		"https://nottracker.example/announce",
+	}}
+	if !torrentUsesTracker(tor, "tracker.example:8443") {
+		t.Fatal("exact tracker authority did not match")
+	}
+	if torrentUsesTracker(tor, "tracker.example") {
+		t.Fatal("authority without configured port matched unexpectedly")
+	}
+	if torrentUsesTracker(tor, "example") {
+		t.Fatal("tracker substring matched unexpectedly")
 	}
 }

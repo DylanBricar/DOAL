@@ -427,43 +427,44 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 
 	// Network I/O — no locks held.
 	resp, err := entry.announcer.AnnounceContext(ctx, params)
-	entry.mu.Lock()
-	if entry.removed || ctx.Err() != nil {
+	if ctx.Err() != nil {
+		entry.mu.Lock()
 		entry.finishAnnounceLocked()
 		entry.mu.Unlock()
 		return
 	}
-	entry.mu.Unlock()
 	if err != nil {
-		if s.onFailure != nil {
-			s.onFailure(infoHashHex, err)
-		}
-		// Back off on consecutive failures using the default interval.
 		s.mu.Lock()
-		_, stillTracked := s.announcers[infoHashHex]
-		s.mu.Unlock()
-
 		entry.mu.Lock()
-		if stillTracked {
-			entry.consecutiveFails++
-			backoff := applyJitterWithRand(entry.announcer.interval, s.jitterPct, entry.rng)
-			entry.nextAt = time.Now().Add(backoff)
+		trackedEntry, stillTracked := s.announcers[infoHashHex]
+		if !stillTracked || trackedEntry != entry || entry.removed {
+			entry.finishAnnounceLocked()
+			entry.mu.Unlock()
+			s.mu.Unlock()
+			return
 		}
+		entry.consecutiveFails++
+		backoff := applyJitterWithRand(entry.announcer.interval, s.jitterPct, entry.rng)
+		entry.nextAt = time.Now().Add(backoff)
 		maxFails := 0
 		if s.config != nil {
 			maxFails = s.config.MaxAnnounceFailures
 		}
-		tooMany := stillTracked && maxFails > 0 && entry.consecutiveFails >= maxFails
+		tooMany := maxFails > 0 && entry.consecutiveFails >= maxFails
 		if tooMany {
 			entry.removed = true
+			delete(s.announcers, infoHashHex)
 		}
+		s.mu.Unlock()
+		entry.mu.Unlock()
+		if s.onFailure != nil {
+			s.onFailure(infoHashHex, err)
+		}
+		entry.mu.Lock()
 		entry.finishAnnounceLocked()
 		entry.mu.Unlock()
 
 		if tooMany {
-			s.mu.Lock()
-			delete(s.announcers, infoHashHex)
-			s.mu.Unlock()
 			if s.onTooManyFails != nil {
 				s.onTooManyFails(infoHashHex)
 			}
@@ -476,16 +477,26 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 		return
 	}
 
-	if s.onSuccess != nil {
-		s.onSuccess(infoHashHex, resp)
-	}
+	var ringErr error
 	if entry.ring != nil {
-		if err := entry.ring.matchUploadedContext(ctx, uploaded); err != nil && s.onFailure != nil {
-			s.onFailure(infoHashHex, err)
-		}
+		ringErr = entry.ring.matchUploadedContext(ctx, uploaded)
+	}
+	if ctx.Err() != nil {
+		entry.mu.Lock()
+		entry.finishAnnounceLocked()
+		entry.mu.Unlock()
+		return
 	}
 
+	s.mu.RLock()
 	entry.mu.Lock()
+	trackedEntry, stillTracked := s.announcers[infoHashHex]
+	s.mu.RUnlock()
+	if !stillTracked || trackedEntry != entry || entry.removed {
+		entry.finishAnnounceLocked()
+		entry.mu.Unlock()
+		return
+	}
 	entry.started = true
 	entry.consecutiveFails = 0
 	if completedTransition && event == "completed" && entry.download != nil {
@@ -496,6 +507,16 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 		interval = entry.announcer.interval
 	}
 	entry.nextAt = time.Now().Add(applyJitterWithRand(interval, s.jitterPct, entry.rng))
+	entry.mu.Unlock()
+
+	if s.onSuccess != nil {
+		s.onSuccess(infoHashHex, resp)
+	}
+	if ringErr != nil && s.onFailure != nil {
+		s.onFailure(infoHashHex, ringErr)
+	}
+
+	entry.mu.Lock()
 	entry.finishAnnounceLocked()
 	entry.mu.Unlock()
 }
