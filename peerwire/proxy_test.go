@@ -25,6 +25,18 @@ func computePieceHashes(content []byte, pieceLength int64) [][20]byte {
 	return hashes
 }
 
+func TestPieceProxyPeerPolicyRejectsPrivateTargetsByDefault(t *testing.T) {
+	t.Parallel()
+
+	peer := Peer{IP: "127.0.0.1", Port: 6881}
+	if peerAllowedByNetworkPolicy(peer, false) {
+		t.Fatal("private loopback peer was accepted without explicit opt-in")
+	}
+	if !peerAllowedByNetworkPolicy(peer, true) {
+		t.Fatal("explicit private-network opt-in did not accept a valid loopback peer")
+	}
+}
+
 // startFakeSeed stands up a TCP peer that speaks enough of the peer-wire
 // protocol to serve piece data for content. When corrupt is true it flips every
 // byte so served pieces fail SHA-1 (modelling a fake-seeder with no real data).

@@ -167,6 +167,82 @@ func TestRemoveTorrentContextDoesNotWaitPastDeadlineForInFlightAnnounce(t *testi
 	}
 }
 
+func TestCanceledAnnounceDoesNotCountAsTrackerFailure(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	tracker := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer tracker.Close()
+
+	var failures atomic.Int32
+	var removals atomic.Int32
+	s := newTestScheduler()
+	s.config.MaxAnnounceFailures = 1
+	s.httpClient = tracker.Client()
+	s.onFailure = func(string, error) { failures.Add(1) }
+	s.onTooManyFails = func(string) { removals.Add(1) }
+	tor := dummyTorrent("cancelled", "00112233445566778899")
+	tor.AnnounceURLs = []string{tracker.URL}
+	s.AddTorrent(tor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.announceOneContext(ctx, tor.InfoHashHex)
+		close(done)
+	}()
+	<-requestStarted
+	cancel()
+	<-done
+
+	if failures.Load() != 0 || removals.Load() != 0 {
+		t.Fatalf("cancellation triggered %d failures and %d removals", failures.Load(), removals.Load())
+	}
+	if !s.HasTorrent(tor.InfoHashHex) {
+		t.Fatal("cancellation removed a valid scheduled torrent")
+	}
+}
+
+func TestRemovedEntrySuppressesLateSuccessCallback(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	release := make(chan struct{})
+	tracker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-release
+		_, _ = w.Write([]byte("d8:intervali60ee"))
+	}))
+	defer tracker.Close()
+
+	var successes atomic.Int32
+	s := newTestScheduler()
+	s.httpClient = tracker.Client()
+	s.onSuccess = func(string, *AnnounceResponse) { successes.Add(1) }
+	tor := dummyTorrent("late-success", "99887766554433221100")
+	tor.AnnounceURLs = []string{tracker.URL}
+	s.AddTorrent(tor)
+
+	done := make(chan struct{})
+	go func() {
+		s.announceOne(tor.InfoHashHex)
+		close(done)
+	}()
+	<-requestStarted
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	s.RemoveTorrentContext(ctx, tor.InfoHashHex)
+	cancel()
+	close(release)
+	<-done
+
+	if got := successes.Load(); got != 0 {
+		t.Fatalf("late success callbacks = %d, want 0 after removal", got)
+	}
+}
+
 // dummyConfig returns a minimal config for scheduler construction.
 func dummyConfig() *config.Config {
 	return &config.Config{

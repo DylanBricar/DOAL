@@ -1,6 +1,10 @@
 package announce
 
-import "testing"
+import (
+	"context"
+	"net"
+	"testing"
+)
 
 func TestSupportedTrackerURLAcceptsAnyHTTPDomain(t *testing.T) {
 	t.Parallel()
@@ -29,5 +33,20 @@ func TestSupportedTrackerURLAcceptsAnyHTTPDomain(t *testing.T) {
 				t.Fatalf("IsSupportedTrackerURL(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveDialTargetsRejectsPrivateNetworksByDefault(t *testing.T) {
+	t.Parallel()
+
+	if _, err := resolveDialTargets(context.Background(), net.DefaultResolver, "127.0.0.1:8080", false); err == nil {
+		t.Fatal("private loopback target was accepted without explicit opt-in")
+	}
+	targets, err := resolveDialTargets(context.Background(), net.DefaultResolver, "127.0.0.1:8080", true)
+	if err != nil {
+		t.Fatalf("explicit private-network opt-in was rejected: %v", err)
+	}
+	if len(targets) != 1 || targets[0] != "127.0.0.1:8080" {
+		t.Fatalf("opt-in targets = %q, want original loopback address", targets)
 	}
 }

@@ -70,6 +70,20 @@ func TestNewServerPathPrefixTrimmed(t *testing.T) {
 	}
 }
 
+func TestEmptyPathPrefixFallsBackToSafeRoute(t *testing.T) {
+	t.Parallel()
+
+	for _, prefix := range []string{"", "/", "///"} {
+		s := NewServer(0, prefix, "x", nil)
+		if s.pathPrefix != "doal" {
+			t.Fatalf("NewServer(%q) pathPrefix = %q, want doal", prefix, s.pathPrefix)
+		}
+		if handler := s.Handler(); handler == nil {
+			t.Fatalf("NewServer(%q).Handler() returned nil", prefix)
+		}
+	}
+}
+
 // TestNewServerStoresFields verifies port and token are stored.
 func TestNewServerStoresFields(t *testing.T) {
 	s := NewServer(9090, "myapp", "mysecret", nil)

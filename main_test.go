@@ -44,3 +44,15 @@ func TestGetConfigReturnsIndependentSnapshot(t *testing.T) {
 		t.Fatalf("GetConfig exposed mutable engine state: %+v", engine.cfg)
 	}
 }
+
+func TestSelectExplicitResumeEvictionIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	active := []string{"bbbb", "aaaa"}
+	if got := selectExplicitResumeEviction(active, 2); got != "bbbb" {
+		t.Fatalf("eviction = %q, want lexicographically last active hash", got)
+	}
+	if got := selectExplicitResumeEviction(active, 3); got != "" {
+		t.Fatalf("eviction below capacity = %q, want empty", got)
+	}
+}
