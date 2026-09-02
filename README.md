@@ -30,7 +30,8 @@ Requires Go 1.27+. Node.js 24 LTS is only needed when rebuilding the embedded we
 ## Usage
 
 ```bash
-./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x
+$env:DOAL_SECRET_TOKEN = "x" # local development only
+./doal --conf=. --port=5082 --path-prefix=doal
 ```
 
 Then open **http://localhost:5082/** (auto-redirects to the UI)
@@ -42,7 +43,12 @@ Then open **http://localhost:5082/** (auto-redirects to the UI)
 | `--conf` | (required) | Path to config directory (contains `config.json`, `clients/`, `torrents/`) |
 | `--port` | `5081` | Web server port |
 | `--path-prefix` | `doal` | URL prefix (UI at `/{prefix}/ui/`) |
-| `--secret-token` | required | WebSocket auth token. The explicit local mode `x` disables authentication and binds the Web UI to `127.0.0.1` only. A real token allows network listening. |
+| `DOAL_SECRET_TOKEN` | required | WebSocket auth token (32+ characters). The explicit value `x` disables authentication for local development only. |
+| `--secret-token` | deprecated | CLI fallback; prefer the environment variable so the token is not exposed in process listings. |
+
+The administrative HTTP/WebSocket server always binds to `127.0.0.1`. For
+remote access, keep DOAL on loopback and use an SSH tunnel or a same-host reverse
+proxy that terminates HTTPS/WSS. Never expose the clear-text backend port.
 
 ### Directory structure
 

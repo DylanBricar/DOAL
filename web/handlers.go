@@ -34,6 +34,7 @@ type EngineController interface {
 	ResumeTracker(domain string)
 	GetPausedTorrents() map[string]bool
 	GetTrackerStats() map[string]int64
+	GetActiveTorrentHashes() []string
 }
 
 // AnnounceState holds per-torrent announce info for init replay.
@@ -145,32 +146,30 @@ func (h *Handlers) handleInitializeMe(clientID string) {
 	torrents := h.engine.GetTorrents()
 	seeding := h.engine.IsSeeding()
 
-	h.server.SendToAll(DestConfig, StompMessage{
+	messages := []StompMessage{{
 		Type:    MsgConfigHasBeenLoaded,
-		Payload: map[string]interface{}{"config": cfg},
-	})
-
-	h.server.SendToAll(DestConfig, StompMessage{
+		Payload: map[string]interface{}{"config": dashboardConfig(cfg)},
+	}, {
 		Type:    MsgListOfClientFiles,
 		Payload: map[string]interface{}{"clients": clientFiles},
-	})
+	}}
 
 	for _, t := range torrents {
-		h.server.SendToAll(DestTorrents, StompMessage{
+		messages = append(messages, StompMessage{
 			Type:    MsgTorrentFileAdded,
 			Payload: torrentPayload(t),
 		})
 	}
 
 	if seeding {
-		h.server.SendToAll(DestGlobal, StompMessage{
+		messages = append(messages, StompMessage{
 			Type:    MsgGlobalSeedStarted,
-			Payload: map[string]interface{}{"client": h.engine.GetActiveClient()},
+			Payload: map[string]interface{}{"client": h.engine.GetActiveClient(), "activeInfoHashes": h.engine.GetActiveTorrentHashes()},
 		})
 
 		// Replay active announce states so the UI shows "Torrents en Seed"
 		for _, a := range h.engine.GetAnnounceStates() {
-			h.server.SendToAll(DestAnnounce, StompMessage{
+			messages = append(messages, StompMessage{
 				Type: MsgSuccessfullyAnnounce,
 				Payload: map[string]interface{}{
 					"infoHash":          a.InfoHashHex,
@@ -190,7 +189,7 @@ func (h *Handlers) handleInitializeMe(clientID string) {
 		paused := h.engine.GetPausedTorrents()
 		for hash, isPaused := range paused {
 			if isPaused {
-				h.server.SendToAll(DestAnnounce, StompMessage{
+				messages = append(messages, StompMessage{
 					Type:    "TORRENT_PAUSED",
 					Payload: map[string]interface{}{"infoHash": hash},
 				})
@@ -199,17 +198,18 @@ func (h *Handlers) handleInitializeMe(clientID string) {
 
 		// Replay current speeds
 		speeds, totalUploaded, uploaded := h.engine.GetSpeeds()
-		h.BroadcastSeedingSpeed(speeds, totalUploaded, uploaded)
+		messages = append(messages, seedingSpeedMessage(speeds, totalUploaded, uploaded))
 
 		// Send tracker stats
 		trackerStats := h.engine.GetTrackerStats()
-		h.BroadcastTrackerStats(trackerStats)
+		messages = append(messages, h.trackerStatsMessage(trackerStats))
 	} else {
-		h.server.SendToAll(DestGlobal, StompMessage{
+		messages = append(messages, StompMessage{
 			Type:    MsgGlobalSeedStopped,
 			Payload: map[string]interface{}{},
 		})
 	}
+	h.server.SendToClient(clientID, DestInitializeMe, messages)
 
 	fmt.Printf("handlers: initialized client %s\n", clientID)
 }
@@ -221,7 +221,7 @@ func (h *Handlers) handleGlobalStart() {
 	}
 	h.server.SendToAll(DestGlobal, StompMessage{
 		Type:    MsgGlobalSeedStarted,
-		Payload: map[string]interface{}{"client": h.engine.GetConfig().Client},
+		Payload: map[string]interface{}{"client": h.engine.GetConfig().Client, "activeInfoHashes": h.engine.GetActiveTorrentHashes()},
 	})
 }
 
@@ -274,6 +274,11 @@ func (h *Handlers) handleConfigSave(data []byte) {
 		})
 		return
 	}
+	if req.ProxyEnabled && req.ProxyURL == "" {
+		if current := h.engine.GetConfig(); current != nil {
+			req.ProxyURL = current.ProxyURL
+		}
+	}
 
 	cfg := &config.Config{
 		MinUploadRate:               req.MinUploadRate,
@@ -321,7 +326,7 @@ func (h *Handlers) handleConfigSave(data []byte) {
 
 	h.server.SendToAll(DestConfig, StompMessage{
 		Type:    MsgConfigHasBeenLoaded,
-		Payload: cfg,
+		Payload: dashboardConfig(cfg),
 	})
 }
 
@@ -527,6 +532,10 @@ func (h *Handlers) BroadcastAnnounceFailed(infoHashHex string, errMsg string) {
 
 // BroadcastSeedingSpeed notifies all clients of the current seeding speed.
 func (h *Handlers) BroadcastSeedingSpeed(speeds map[string]int64, totalUploaded int64, uploaded map[string]int64) {
+	h.server.SendToAll(DestSpeed, seedingSpeedMessage(speeds, totalUploaded, uploaded))
+}
+
+func seedingSpeedMessage(speeds map[string]int64, totalUploaded int64, uploaded map[string]int64) StompMessage {
 	type speedEntry struct {
 		InfoHash       string `json:"infoHash"`
 		BytesPerSecond int64  `json:"bytesPerSecond"`
@@ -536,17 +545,21 @@ func (h *Handlers) BroadcastSeedingSpeed(speeds map[string]int64, totalUploaded 
 	for hash, bps := range speeds {
 		entries = append(entries, speedEntry{InfoHash: hash, BytesPerSecond: bps, Uploaded: uploaded[hash]})
 	}
-	h.server.SendToAll(DestSpeed, StompMessage{
+	return StompMessage{
 		Type: MsgSeedingSpeedHasChanged,
 		Payload: map[string]interface{}{
 			"speeds":        entries,
 			"totalUploaded": totalUploaded,
 		},
-	})
+	}
 }
 
 // BroadcastTrackerStats sends aggregated per-tracker upload stats to all clients.
 func (h *Handlers) BroadcastTrackerStats(stats map[string]int64) {
+	h.server.SendToAll(DestSpeed, h.trackerStatsMessage(stats))
+}
+
+func (h *Handlers) trackerStatsMessage(stats map[string]int64) StompMessage {
 	type trackerEntry struct {
 		Domain        string `json:"domain"`
 		TotalUploaded int64  `json:"totalUploaded"`
@@ -588,10 +601,33 @@ func (h *Handlers) BroadcastTrackerStats(stats map[string]int64) {
 			Paused:       trackerPaused[domain],
 		})
 	}
-	h.server.SendToAll(DestSpeed, StompMessage{
+	return StompMessage{
 		Type:    MsgTrackerStats,
 		Payload: map[string]interface{}{"trackers": entries},
-	})
+	}
+}
+
+// BroadcastTorrentPaused notifies dashboards when ratio enforcement pauses a torrent.
+func (h *Handlers) BroadcastTorrentPaused(infoHashHex string) {
+	h.server.SendToAll(DestAnnounce, StompMessage{Type: "TORRENT_PAUSED", Payload: map[string]interface{}{"infoHash": infoHashHex}})
+}
+
+func (h *Handlers) BroadcastTorrentSlotActivated(t *torrent.Torrent) {
+	h.server.SendToAll(DestAnnounce, StompMessage{Type: "TORRENT_SLOT_ACTIVATED", Payload: torrentPayload(t)})
+}
+
+func (h *Handlers) BroadcastTorrentSlotDeactivated(infoHashHex string) {
+	h.server.SendToAll(DestAnnounce, StompMessage{Type: "TORRENT_SLOT_DEACTIVATED", Payload: map[string]interface{}{"infoHash": infoHashHex}})
+}
+
+func dashboardConfig(cfg *config.Config) *config.Config {
+	if cfg == nil {
+		return nil
+	}
+	copy := *cfg
+	copy.DHTBootstrapNodes = append([]string(nil), cfg.DHTBootstrapNodes...)
+	copy.ProxyURL = ""
+	return &copy
 }
 
 // torrentPayload converts a Torrent to a map suitable for JSON serialization.

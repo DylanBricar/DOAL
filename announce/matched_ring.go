@@ -248,10 +248,6 @@ func (r *matchedRing) params(actor *matchedActor, downloaded int64, event string
 	}
 }
 
-func (r *matchedRing) stop() error {
-	return r.stopContext(context.Background())
-}
-
 func (r *matchedRing) stopContext(ctx context.Context) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()

@@ -62,6 +62,14 @@ func TestEmbeddedUISupportsAuthenticatedRemoteMode(t *testing.T) {
 			t.Errorf("embedded UI still depends on %q", remote)
 		}
 	}
+	for _, unsafe := range []string{"doalAuthToken", "Notification.requestPermission", "innerHTML=savedHistory"} {
+		if strings.Contains(page, unsafe) {
+			t.Errorf("embedded UI retains unsafe browser behavior %q", unsafe)
+		}
+	}
+	if !strings.Contains(page, "activeInfoHashes") {
+		t.Fatal("embedded UI does not render the backend's active slot snapshot")
+	}
 }
 
 func TestWebSocketOriginPolicy(t *testing.T) {
@@ -118,8 +126,8 @@ func TestUnauthenticatedWebServerBindsLoopbackOnly(t *testing.T) {
 	if got := NewServer(5081, "doal", "x", nil).listenAddress(); got != "127.0.0.1:5081" {
 		t.Fatalf("local-only listen address=%q", got)
 	}
-	if got := NewServer(5081, "doal", "real-secret", nil).listenAddress(); got != ":5081" {
-		t.Fatalf("authenticated listen address=%q", got)
+	if got := NewServer(5081, "doal", "real-secret", nil).listenAddress(); got != "127.0.0.1:5081" {
+		t.Fatalf("authenticated server must remain loopback-only, got %q", got)
 	}
 }
 

@@ -110,12 +110,12 @@ func NewScheduler(
 
 // AddTorrent registers a torrent for periodic announcing.
 // The first announce (event=started) is scheduled immediately.
-func (s *Scheduler) AddTorrent(t *torrent.Torrent) {
+func (s *Scheduler) AddTorrent(t *torrent.Torrent) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.announcers[t.InfoHashHex]; exists {
-		return
+		return false
 	}
 
 	torrentClient := s.client.clone()
@@ -159,6 +159,7 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) {
 		}
 	}
 	s.announcers[t.InfoHashHex] = entry
+	return true
 }
 
 // RemoveTorrent sends a stopped announce and removes the torrent from the
@@ -285,6 +286,17 @@ func (s *Scheduler) TorrentCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.announcers)
+}
+
+// TorrentHashes returns a snapshot of hashes currently occupying scheduler slots.
+func (s *Scheduler) TorrentHashes() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	hashes := make([]string, 0, len(s.announcers))
+	for hash := range s.announcers {
+		hashes = append(hashes, hash)
+	}
+	return hashes
 }
 
 // tick iterates over all registered torrents and announces any that are due.

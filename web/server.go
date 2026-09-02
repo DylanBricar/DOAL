@@ -126,10 +126,9 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) listenAddress() string {
-	if s.secretToken == "" || s.secretToken == "x" {
-		return fmt.Sprintf("127.0.0.1:%d", s.port)
-	}
-	return fmt.Sprintf(":%d", s.port)
+	// The administrative dashboard is intentionally loopback-only. Remote use
+	// must terminate TLS at a local reverse proxy or travel through an SSH tunnel.
+	return fmt.Sprintf("127.0.0.1:%d", s.port)
 }
 
 func websocketOriginAllowed(r *http.Request) bool {
@@ -180,7 +179,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("server: WebSocket upgrade failed: %v\n", err)
 		return
 	}
-	defer conn.Close()
 	conn.SetReadLimit(maxWebSocketMessageBytes)
 	if err := conn.SetReadDeadline(time.Now().Add(webSocketAuthTimeout)); err != nil {
 		_ = conn.Close()
@@ -193,10 +191,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		id:            id,
 		conn:          conn,
 		subscriptions: make(map[string]string),
+		outbound:      make(chan []byte, 32),
+		done:          make(chan struct{}),
 	}
+	go c.writeLoop()
 
 	s.addClient(c)
 	defer s.removeClient(c)
+	defer c.close()
 
 	for {
 		_, msg, err := conn.ReadMessage()

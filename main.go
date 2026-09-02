@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,6 +103,10 @@ type Engine struct {
 
 	seeding      bool
 	mu           sync.RWMutex
+	lifecycleMu  sync.Mutex
+	slotsMu      sync.Mutex
+	configSaveMu sync.Mutex
+	failedSlots  map[string]bool // protected by slotsMu; retried on explicit resume or restart
 	dispatcher   *bandwidth.Dispatcher
 	scheduler    *announce.Scheduler
 	peerWire     *peerwire.Server
@@ -117,6 +122,10 @@ type Engine struct {
 var _ web.EngineController = (*Engine)(nil)
 
 func (e *Engine) Start() error {
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -178,12 +187,18 @@ func (e *Engine) Start() error {
 		persistence.SaveUploadStats(statsPath, totalUploaded)
 	})
 	disp.SetTotalUploaded(prevUploaded)
+	disp.SetAutoPauseCallback(func(infoHashHex string) {
+		e.pauseTorrentRuntime(infoHashHex)
+		if e.handlers != nil {
+			e.handlers.BroadcastTorrentPaused(infoHashHex)
+		}
+	})
 	e.dispatcher = disp
 
-	// Start dispatcher
+	// Create the cancellation domain now. Worker goroutines start only after the
+	// advertised PeerWire port has been bound successfully.
 	seedCtx, cancelSeed := context.WithCancel(context.Background())
 	e.cancelSeed = cancelSeed
-	go e.dispatcher.Run()
 
 	// Auto-detect public IP if not configured
 	if cfg.AnnounceIP == "" {
@@ -252,16 +267,7 @@ func (e *Engine) Start() error {
 		func(infoHashHex string) {
 			slog.Warn("too many announce failures, removed", "hash", infoHashHex[:12])
 			e.handlers.BroadcastTooManyFails(infoHashHex)
-			e.mu.RLock()
-			disp := e.dispatcher
-			pw := e.peerWire
-			e.mu.RUnlock()
-			if disp != nil {
-				disp.UnregisterTorrent(infoHashHex)
-			}
-			if pw != nil {
-				pw.UnregisterTorrent(infoHashHex)
-			}
+			go e.removeFailedTorrentRuntime(infoHashHex)
 		},
 		// getUploaded: fetch per-torrent uploaded bytes from the dispatcher
 		func(infoHashHex string) int64 {
@@ -273,76 +279,11 @@ func (e *Engine) Start() error {
 		},
 	)
 
-	torrents := e.watcher.GetTorrents()
-	for i, t := range torrents {
-		if i < cfg.SimultaneousSeed {
-			e.scheduler.AddTorrent(t)
-			disp.RegisterTorrent(t.InfoHashHex, t.Size)
-		}
-	}
-	go e.scheduler.Run(seedCtx)
-
-	// Torrent rotation: when more torrents exist than simultaneous slots,
-	// periodically swap one active torrent for an inactive one.
-	if len(torrents) > cfg.SimultaneousSeed {
-		go func() {
-			ticker := time.NewTicker(30 * time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-seedCtx.Done():
-					return
-				case <-ticker.C:
-					e.rotateTorrents()
-				}
-			}
-		}()
-	}
-
 	// Start PeerWire server on the same port advertised to trackers.
 	e.peerWire = peerwire.NewServer(listenPort, cfg.PeerResponseMode, cc.UserAgent)
 	if cfg.EnablePieceProxy {
 		e.peerWire.EnablePieceProxy()
 		slog.Info("piece proxy enabled (on-demand leech + SHA-1 verify)")
-	}
-	for _, t := range torrents {
-		e.peerWire.RegisterTorrent(peerwire.TorrentInfo{
-			InfoHash:    t.InfoHash,
-			PieceCount:  t.PieceCount,
-			PeerID:      []byte(cc.PeerID),
-			PieceHashes: t.PieceHashes,
-			PieceLength: t.PieceLength,
-			TotalSize:   t.Size,
-			Metadata:    t.InfoBytes,
-		})
-	}
-
-	// Auto-detect real data files in torrents/ directory for SHA-1 verified piece serving.
-	// Convention: place the real file next to its .torrent with matching base name.
-	// Example: torrents/MyMovie.1080p.torrent + torrents/MyMovie.1080p.mkv
-	for _, t := range torrents {
-		// Strip .torrent extension to get the base name
-		torrentBase := strings.TrimSuffix(filepath.Base(t.FilePath), ".torrent")
-		// Look for any non-.torrent file with the same base name
-		entries, _ := os.ReadDir(e.torrentsDir)
-		for _, entry := range entries {
-			if entry.IsDir() || strings.HasSuffix(entry.Name(), ".torrent") {
-				continue
-			}
-			entryBase := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			if entryBase == torrentBase {
-				dataPath := filepath.Join(e.torrentsDir, entry.Name())
-				info, _ := entry.Info()
-				if info != nil && info.Size() == t.Size {
-					if err := e.peerWire.RegisterDataFile(t.InfoHashHex, dataPath, t.PieceLength, t.Size, t.PieceHashes); err != nil {
-						slog.Warn("data file rejected", "torrent", t.Name, "file", entry.Name(), "err", err)
-					} else {
-						slog.Info("SHA-1 data registered", "torrent", t.Name, "file", entry.Name(), "pieces", t.PieceCount)
-					}
-				}
-				break
-			}
-		}
 	}
 	// Start the configured DHT first so PeerWire advertises DHT only when the UDP
 	// listener is genuinely active and can publish its PORT message.
@@ -351,28 +292,59 @@ func (e *Engine) Start() error {
 		if err := e.dhtNode.ConfigureNetwork(listenPort, cfg.DHTBootstrapNodes); err != nil {
 			slog.Warn("DHT configuration failed (non-fatal)", "err", err)
 			e.dhtNode = nil
-		} else {
-			for _, t := range torrents {
-				e.dhtNode.AddTorrent(t.InfoHashHex)
-			}
-			if err := e.dhtNode.Start(); err != nil {
-				slog.Warn("DHT start failed (non-fatal)", "err", err)
-				e.dhtNode = nil
-			} else {
-				dhtPort := e.dhtNode.Addr().Port
-				e.peerWire.EnableDHT(dhtPort)
-				slog.Info("DHT node started", "port", dhtPort)
-			}
 		}
 	}
-	go func() {
-		if err := e.peerWire.Start(); err != nil {
-			slog.Error("peerwire start", "err", err)
+
+	e.failedSlots = make(map[string]bool)
+	torrents := sortedTorrents(e.watcher.GetTorrents())
+	for i, t := range torrents {
+		if i >= cfg.SimultaneousSeed {
+			break
 		}
-	}()
+		e.activateTorrent(t, e.scheduler, disp, e.peerWire, e.dhtNode, cc)
+	}
+	if e.dhtNode != nil {
+		if err := e.dhtNode.Start(); err != nil {
+			slog.Warn("DHT start failed (non-fatal)", "err", err)
+			e.dhtNode = nil
+		} else {
+			dhtPort := e.dhtNode.Addr().Port
+			e.peerWire.EnableDHT(dhtPort)
+			slog.Info("DHT node started", "port", dhtPort)
+		}
+	}
+	if err := e.peerWire.Start(); err != nil {
+		if e.dhtNode != nil {
+			e.dhtNode.Stop()
+		}
+		e.peerWire.Stop()
+		cancelSeed()
+		disp.Stop()
+		e.dispatcher = nil
+		e.scheduler = nil
+		e.peerWire = nil
+		e.dhtNode = nil
+		e.clientConfig = nil
+		e.cancelSeed = nil
+		return fmt.Errorf("engine: starting PeerWire listener: %w", err)
+	}
 
 	e.announceStates = make(map[string]*web.AnnounceState)
 	e.seeding = true
+	go e.dispatcher.Run()
+	go e.scheduler.Run(seedCtx)
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-seedCtx.Done():
+				return
+			case <-ticker.C:
+				e.rotateTorrents()
+			}
+		}
+	}()
 	slog.Info("seeding started", "torrents", len(torrents), "client", cfg.Client)
 	return nil
 }
@@ -410,24 +382,36 @@ func (e *Engine) GetAnnounceStates() []web.AnnounceState {
 }
 
 func (e *Engine) PauseTorrent(infoHashHex string) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.dispatcher != nil {
-		e.dispatcher.PauseTorrent(infoHashHex)
-	}
-	if e.scheduler != nil {
-		e.scheduler.PauseTorrent(infoHashHex)
-	}
+	e.pauseTorrentRuntime(infoHashHex)
 }
 
 func (e *Engine) ResumeTorrent(infoHashHex string) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.dispatcher != nil {
-		e.dispatcher.ResumeTorrent(infoHashHex)
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	if e.failedSlots[infoHashHex] {
+		delete(e.failedSlots, infoHashHex)
+		e.rebalanceActiveSlotsLocked()
+		return
 	}
-	if e.scheduler != nil {
-		e.scheduler.ResumeTorrent(infoHashHex)
+	e.mu.RLock()
+	seeding := e.seeding
+	sched, disp, pw, dhtNode, cc := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode, e.clientConfig
+	e.mu.RUnlock()
+	if !seeding || sched == nil || !sched.HasTorrent(infoHashHex) {
+		return
+	}
+	t := e.torrentByHash(infoHashHex)
+	if t == nil {
+		return
+	}
+	disp.ResumeTorrent(infoHashHex)
+	sched.ResumeTorrent(infoHashHex)
+	if pw != nil && cc != nil {
+		pw.RegisterTorrent(peerWireTorrentInfo(t, cc))
+		e.registerDataFile(pw, t)
+	}
+	if dhtNode != nil {
+		dhtNode.AddTorrent(infoHashHex)
 	}
 }
 
@@ -495,60 +479,71 @@ func (e *Engine) GetTrackerStats() map[string]int64 {
 }
 
 func (e *Engine) Stop() {
+	e.lifecycleMu.Lock()
+	defer e.lifecycleMu.Unlock()
+
+	e.slotsMu.Lock()
 	e.mu.Lock()
 	if !e.seeding {
 		e.mu.Unlock()
+		e.slotsMu.Unlock()
 		return
 	}
 	e.seeding = false
+	e.failedSlots = nil
 	sched := e.scheduler
 	cancelSeed := e.cancelSeed
-	torrents := e.watcher.GetTorrents()
+	pw := e.peerWire
+	dhtNode := e.dhtNode
+	disp := e.dispatcher
+	var activeHashes []string
+	if sched != nil {
+		activeHashes = sched.TorrentHashes()
+	}
 	e.mu.Unlock()
+	e.slotsMu.Unlock()
 
 	// Cancel and join periodic work before dismantling any dependencies. Final
 	// stopped announces are bounded by a shared shutdown deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if sched != nil {
 		if cancelSeed != nil {
 			cancelSeed()
 		}
 		sched.Stop()
 		sched.Wait()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		var wg sync.WaitGroup
-		for _, t := range torrents {
-			wg.Add(1)
-			go func(hash string) {
-				defer wg.Done()
-				sched.RemoveTorrentContext(ctx, hash)
-			}(t.InfoHashHex)
-		}
-		wg.Wait()
+		removeScheduledTorrents(ctx, sched, activeHashes)
+	}
+
+	if pw != nil {
+		pw.Stop()
+	}
+	if dhtNode != nil {
+		dhtNode.Stop()
+	}
+	if disp != nil {
+		disp.Stop()
+		disp.Wait()
 	}
 
 	e.mu.Lock()
-
-	if e.cancelSeed != nil {
-		e.cancelSeed()
-	}
-	if e.peerWire != nil {
-		e.peerWire.Stop()
+	e.cancelSeed = nil
+	if e.peerWire == pw {
 		e.peerWire = nil
 	}
-	if e.dhtNode != nil {
-		e.dhtNode.Stop()
+	if e.dhtNode == dhtNode {
 		e.dhtNode = nil
 	}
-	if e.dispatcher != nil {
-		e.dispatcher.Stop()
-		e.dispatcher.Wait()
+	if e.dispatcher == disp {
 		e.dispatcher = nil
+	}
+	if e.scheduler == sched {
+		e.scheduler = nil
 	}
 	// Reset upload stats to 0 for the next session
 	statsPath := filepath.Join(e.confDir, "upload-stats.txt")
 	persistence.SaveUploadStats(statsPath, 0)
-	e.scheduler = nil
 	e.clientConfig = nil
 	e.mu.Unlock()
 
@@ -562,15 +557,21 @@ func (e *Engine) Stop() {
 // rotateTorrents swaps one active torrent for one inactive torrent to ensure
 // all torrents get seeding time when simultaneousSeed < total torrents.
 func (e *Engine) rotateTorrents() {
-	allTorrents := e.watcher.GetTorrents()
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	allTorrents := sortedTorrents(e.watcher.GetTorrents())
 
 	e.mu.RLock()
 	sched := e.scheduler
 	disp := e.dispatcher
+	pw := e.peerWire
+	dhtNode := e.dhtNode
+	cc := e.clientConfig
+	seeding := e.seeding
 	simultaneousSeed := e.cfg.SimultaneousSeed
 	e.mu.RUnlock()
 
-	if sched == nil || len(allTorrents) <= simultaneousSeed {
+	if !seeding || sched == nil || len(allTorrents) <= simultaneousSeed {
 		return
 	}
 
@@ -579,7 +580,7 @@ func (e *Engine) rotateTorrents() {
 	for _, t := range allTorrents {
 		if sched.HasTorrent(t.InfoHashHex) && !sched.IsPaused(t.InfoHashHex) {
 			active = append(active, t.InfoHashHex)
-		} else {
+		} else if !sched.HasTorrent(t.InfoHashHex) && !e.failedSlots[t.InfoHashHex] {
 			inactive = append(inactive, t)
 		}
 	}
@@ -591,15 +592,10 @@ func (e *Engine) rotateTorrents() {
 	removeHash := active[rand.Intn(len(active))]
 	addTorrent := inactive[rand.Intn(len(inactive))]
 
-	sched.RemoveTorrent(removeHash)
-	if disp != nil {
-		disp.UnregisterTorrent(removeHash)
-	}
-
-	sched.AddTorrent(addTorrent)
-	if disp != nil {
-		disp.RegisterTorrent(addTorrent.InfoHashHex, addTorrent.Size)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.deactivateTorrent(ctx, removeHash, sched, disp, pw, dhtNode)
+	e.activateTorrent(addTorrent, sched, disp, pw, dhtNode, cc)
 
 	slog.Info("torrent rotated", "removed", removeHash[:12], "added", addTorrent.InfoHashHex[:12])
 }
@@ -614,20 +610,44 @@ func (e *Engine) SaveConfig(cfg *config.Config) error {
 		return fmt.Errorf("engine: invalid config: %w", err)
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.configSaveMu.Lock()
+	defer e.configSaveMu.Unlock()
 	confPath := filepath.Join(e.confDir, "config.json")
 	if err := stored.SaveTo(confPath); err != nil {
 		return fmt.Errorf("engine: saving config: %w", err)
 	}
 
+	e.mu.Lock()
 	e.cfg = stored
 	// If seeding, update the dispatcher's config live
 	if e.seeding && e.dispatcher != nil {
 		e.dispatcher.UpdateConfig(stored)
 	}
+	seeding := e.seeding
+	e.mu.Unlock()
+	if seeding {
+		go e.rebalanceActiveSlots()
+	}
 
 	return nil
+}
+
+func (e *Engine) GetActiveTorrentHashes() []string {
+	e.mu.RLock()
+	sched := e.scheduler
+	e.mu.RUnlock()
+	if sched == nil {
+		return nil
+	}
+	hashes := sched.TorrentHashes()
+	active := hashes[:0]
+	for _, hash := range hashes {
+		if !sched.IsPaused(hash) {
+			active = append(active, hash)
+		}
+	}
+	sort.Strings(active)
+	return active
 }
 
 // GetConfig returns a snapshot of the current configuration.
@@ -644,6 +664,218 @@ func cloneConfig(cfg *config.Config) *config.Config {
 	clone := *cfg
 	clone.DHTBootstrapNodes = append([]string(nil), cfg.DHTBootstrapNodes...)
 	return &clone
+}
+
+func sortedTorrents(torrents []*torrent.Torrent) []*torrent.Torrent {
+	result := append([]*torrent.Torrent(nil), torrents...)
+	sort.Slice(result, func(i, j int) bool { return result[i].InfoHashHex < result[j].InfoHashHex })
+	return result
+}
+
+func peerWireTorrentInfo(t *torrent.Torrent, cc *announce.ClientConfig) peerwire.TorrentInfo {
+	return peerwire.TorrentInfo{
+		InfoHash:    t.InfoHash,
+		PieceCount:  t.PieceCount,
+		PeerID:      []byte(cc.PeerID),
+		PieceHashes: t.PieceHashes,
+		PieceLength: t.PieceLength,
+		TotalSize:   t.Size,
+		Metadata:    t.InfoBytes,
+	}
+}
+
+func (e *Engine) registerDataFile(pw *peerwire.Server, t *torrent.Torrent) {
+	if pw == nil || t == nil {
+		return
+	}
+	torrentBase := strings.TrimSuffix(filepath.Base(t.FilePath), ".torrent")
+	entries, err := os.ReadDir(e.torrentsDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(strings.ToLower(entry.Name()), ".torrent") {
+			continue
+		}
+		entryBase := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		if entryBase != torrentBase {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.Size() != t.Size {
+			return
+		}
+		dataPath := filepath.Join(e.torrentsDir, entry.Name())
+		if err := pw.RegisterDataFile(t.InfoHashHex, dataPath, t.PieceLength, t.Size, t.PieceHashes); err != nil {
+			slog.Warn("data file rejected", "torrent", t.Name, "file", entry.Name(), "err", err)
+		} else {
+			slog.Info("SHA-1 data registered", "torrent", t.Name, "file", entry.Name(), "pieces", t.PieceCount)
+		}
+		return
+	}
+}
+
+func (e *Engine) activateTorrent(t *torrent.Torrent, sched *announce.Scheduler, disp *bandwidth.Dispatcher, pw *peerwire.Server, dhtNode *dht.Node, cc *announce.ClientConfig) bool {
+	if t == nil || sched == nil || disp == nil || cc == nil || !sched.AddTorrent(t) {
+		return false
+	}
+	disp.RegisterTorrent(t.InfoHashHex, t.Size)
+	if pw != nil {
+		pw.RegisterTorrent(peerWireTorrentInfo(t, cc))
+		e.registerDataFile(pw, t)
+	}
+	if dhtNode != nil {
+		dhtNode.AddTorrent(t.InfoHashHex)
+	}
+	return true
+}
+
+func (e *Engine) deactivateTorrent(ctx context.Context, infoHashHex string, sched *announce.Scheduler, disp *bandwidth.Dispatcher, pw *peerwire.Server, dhtNode *dht.Node) {
+	if pw != nil {
+		pw.UnregisterTorrent(infoHashHex)
+	}
+	if dhtNode != nil {
+		dhtNode.RemoveTorrent(infoHashHex)
+	}
+	if sched != nil {
+		sched.RemoveTorrentContext(ctx, infoHashHex)
+	}
+	if disp != nil {
+		disp.UnregisterTorrent(infoHashHex)
+	}
+	e.announceStatesMu.Lock()
+	delete(e.announceStates, infoHashHex)
+	e.announceStatesMu.Unlock()
+}
+
+func (e *Engine) torrentByHash(infoHashHex string) *torrent.Torrent {
+	for _, t := range e.watcher.GetTorrents() {
+		if t.InfoHashHex == infoHashHex {
+			return t
+		}
+	}
+	return nil
+}
+
+func (e *Engine) pauseTorrentRuntime(infoHashHex string) {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	e.mu.RLock()
+	seeding := e.seeding
+	sched, disp, pw, dhtNode := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode
+	e.mu.RUnlock()
+	if !seeding || sched == nil || !sched.HasTorrent(infoHashHex) {
+		return
+	}
+	if disp != nil {
+		disp.PauseTorrent(infoHashHex)
+	}
+	sched.PauseTorrent(infoHashHex)
+	if pw != nil {
+		pw.UnregisterTorrent(infoHashHex)
+	}
+	if dhtNode != nil {
+		dhtNode.RemoveTorrent(infoHashHex)
+	}
+}
+
+func (e *Engine) removeFailedTorrentRuntime(infoHashHex string) {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	e.mu.RLock()
+	seeding := e.seeding
+	sched, disp, pw, dhtNode := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode
+	e.mu.RUnlock()
+	if !seeding {
+		return
+	}
+	if e.failedSlots == nil {
+		e.failedSlots = make(map[string]bool)
+	}
+	e.failedSlots[infoHashHex] = true
+	e.deactivateTorrent(context.Background(), infoHashHex, sched, disp, pw, dhtNode)
+	e.rebalanceActiveSlotsLocked()
+}
+
+func (e *Engine) rebalanceActiveSlots() {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	e.rebalanceActiveSlotsLocked()
+}
+
+func (e *Engine) rebalanceActiveSlotsLocked() {
+	e.mu.RLock()
+	seeding := e.seeding
+	sched, disp, pw, dhtNode, cc := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode, e.clientConfig
+	target := 0
+	if e.cfg != nil {
+		target = e.cfg.SimultaneousSeed
+	}
+	e.mu.RUnlock()
+	if !seeding || sched == nil || target < 1 {
+		return
+	}
+
+	all := sortedTorrents(e.watcher.GetTorrents())
+	byHash := make(map[string]*torrent.Torrent, len(all))
+	for _, t := range all {
+		byHash[t.InfoHashHex] = t
+	}
+	active := sched.TorrentHashes()
+	sort.Strings(active)
+	for len(active) > target {
+		hash := active[len(active)-1]
+		active = active[:len(active)-1]
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		e.deactivateTorrent(ctx, hash, sched, disp, pw, dhtNode)
+		cancel()
+		if e.handlers != nil {
+			e.handlers.BroadcastTorrentSlotDeactivated(hash)
+		}
+	}
+	for _, t := range all {
+		if len(active) >= target {
+			break
+		}
+		if _, exists := byHash[t.InfoHashHex]; !exists || sched.HasTorrent(t.InfoHashHex) || e.failedSlots[t.InfoHashHex] {
+			continue
+		}
+		if e.activateTorrent(t, sched, disp, pw, dhtNode, cc) {
+			active = append(active, t.InfoHashHex)
+			if e.handlers != nil {
+				e.handlers.BroadcastTorrentSlotActivated(t)
+			}
+		}
+	}
+}
+
+func removeScheduledTorrents(ctx context.Context, sched *announce.Scheduler, hashes []string) {
+	workerCount := min(len(hashes), 32)
+	if workerCount == 0 {
+		return
+	}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for hash := range jobs {
+				sched.RemoveTorrentContext(ctx, hash)
+			}
+		}()
+	}
+	for _, hash := range hashes {
+		select {
+		case jobs <- hash:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // GetClientFiles returns the list of .client filenames available in the clients directory.
@@ -687,10 +919,10 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	var (
-		confDir     = flag.String("conf", "", "path to config directory (required)")
-		port        = flag.Int("port", 5081, "web server port")
-		pathPrefix  = flag.String("path-prefix", "doal", "URL path prefix")
-		secretToken = flag.String("secret-token", "", "auth token for WebSocket (required)")
+		confDir         = flag.String("conf", "", "path to config directory (required)")
+		port            = flag.Int("port", 5081, "web server port")
+		pathPrefix      = flag.String("path-prefix", "doal", "URL path prefix")
+		secretTokenFlag = flag.String("secret-token", "", "deprecated: auth token (prefer DOAL_SECRET_TOKEN)")
 	)
 	flag.Parse()
 
@@ -699,9 +931,22 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	if *secretToken == "" {
-		slog.Error("--secret-token is required")
+	secretToken := strings.TrimSpace(os.Getenv("DOAL_SECRET_TOKEN"))
+	if *secretTokenFlag != "" {
+		if secretToken != "" {
+			slog.Error("set the auth token either with DOAL_SECRET_TOKEN or --secret-token, not both")
+			os.Exit(1)
+		}
+		secretToken = *secretTokenFlag
+		slog.Warn("--secret-token exposes the token in process listings; use DOAL_SECRET_TOKEN instead")
+	}
+	if secretToken == "" {
+		slog.Error("DOAL_SECRET_TOKEN is required (use x only for local development)")
 		flag.Usage()
+		os.Exit(1)
+	}
+	if secretToken != "x" && len(secretToken) < 32 {
+		slog.Error("DOAL_SECRET_TOKEN must contain at least 32 characters")
 		os.Exit(1)
 	}
 
@@ -734,7 +979,7 @@ func main() {
 	}
 
 	// Create WebSocket server (onMessage wired by NewHandlers below).
-	srv := web.NewServer(*port, *pathPrefix, *secretToken, nil)
+	srv := web.NewServer(*port, *pathPrefix, secretToken, nil)
 
 	// Wire handlers: sets srv.onMessage internally.
 	handlers := web.NewHandlers(srv, engine)
@@ -752,61 +997,28 @@ func main() {
 	watcher.OnAdd = func(t *torrent.Torrent) {
 		slog.Info("torrent added", "name", t.Name, "hash", t.InfoHashHex)
 		handlers.BroadcastTorrentAdded(t)
-		engine.mu.RLock()
-		seeding := engine.seeding
-		disp := engine.dispatcher
-		sched := engine.scheduler
-		pw := engine.peerWire
-		dhtNode := engine.dhtNode
-		cc := engine.clientConfig
-		simultaneous := 0
-		if engine.cfg != nil {
-			simultaneous = engine.cfg.SimultaneousSeed
-		}
-		engine.mu.RUnlock()
-		if !seeding {
-			return
-		}
-		if pw != nil && cc != nil {
-			pw.RegisterTorrent(peerwire.TorrentInfo{
-				InfoHash: t.InfoHash, PieceCount: t.PieceCount, PeerID: []byte(cc.PeerID),
-				PieceHashes: t.PieceHashes, PieceLength: t.PieceLength, TotalSize: t.Size, Metadata: t.InfoBytes,
-			})
-		}
-		if dhtNode != nil {
-			dhtNode.AddTorrent(t.InfoHashHex)
-		}
-		if sched != nil && sched.TorrentCount() < simultaneous {
-			sched.AddTorrent(t)
-			if disp != nil {
-				disp.RegisterTorrent(t.InfoHashHex, t.Size)
-			}
-		}
+		go engine.rebalanceActiveSlots()
 	}
 	watcher.OnRemove = func(t *torrent.Torrent) {
 		slog.Info("torrent removed", "name", t.Name, "hash", t.InfoHashHex)
 		handlers.BroadcastTorrentDeleted(t)
-		engine.mu.RLock()
-		seeding := engine.seeding
-		disp := engine.dispatcher
-		sched := engine.scheduler
-		pw := engine.peerWire
-		dhtNode := engine.dhtNode
-		engine.mu.RUnlock()
-		if seeding {
-			if disp != nil {
-				disp.UnregisterTorrent(t.InfoHashHex)
+		go func() {
+			engine.slotsMu.Lock()
+			defer engine.slotsMu.Unlock()
+			engine.mu.RLock()
+			seeding := engine.seeding
+			sched, disp, pw, dhtNode := engine.scheduler, engine.dispatcher, engine.peerWire, engine.dhtNode
+			engine.mu.RUnlock()
+			if !seeding {
+				return
 			}
-			if sched != nil {
-				go sched.RemoveTorrent(t.InfoHashHex)
-			} // async to avoid blocking
-			if pw != nil {
-				pw.UnregisterTorrent(t.InfoHashHex)
-			}
-			if dhtNode != nil {
-				dhtNode.RemoveTorrent(t.InfoHashHex)
-			}
-		}
+			delete(engine.failedSlots, t.InfoHashHex)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			engine.deactivateTorrent(ctx, t.InfoHashHex, sched, disp, pw, dhtNode)
+			cancel()
+			handlers.BroadcastTorrentSlotDeactivated(t.InfoHashHex)
+			engine.rebalanceActiveSlotsLocked()
+		}()
 	}
 
 	// Scan existing .torrent files before starting the watch loop.

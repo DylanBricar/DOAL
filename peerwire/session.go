@@ -13,6 +13,7 @@ import (
 const (
 	peerMessageLimit  = 1 << 20
 	peerWriteTimeout  = 5 * time.Second
+	peerIdleTimeout   = 3 * time.Minute
 	pexInterval       = time.Minute
 	keepAliveInterval = 2 * time.Minute
 )
@@ -23,6 +24,7 @@ type peerSession struct {
 	pexKnown      map[string]Peer
 	nextPEX       time.Time
 	nextKeepAlive time.Time
+	lastActivity  time.Time
 }
 
 func (s *Server) servePeerMessages(conn net.Conn, info *TorrentInfo, infoHashHex string) {
@@ -31,6 +33,7 @@ func (s *Server) servePeerMessages(conn net.Conn, info *TorrentInfo, infoHashHex
 		pexKnown:      make(map[string]Peer),
 		nextPEX:       now.Add(pexInterval),
 		nextKeepAlive: now.Add(keepAliveInterval),
+		lastActivity:  now,
 	}
 	defer func() {
 		if session.peerKey != "" {
@@ -48,6 +51,10 @@ func (s *Server) servePeerMessages(conn net.Conn, info *TorrentInfo, infoHashHex
 		if session.nextKeepAlive.Before(deadline) {
 			deadline = session.nextKeepAlive
 		}
+		idleDeadline := session.lastActivity.Add(peerIdleTimeout)
+		if idleDeadline.Before(deadline) {
+			deadline = idleDeadline
+		}
 		if err := conn.SetReadDeadline(deadline); err != nil {
 			return
 		}
@@ -57,13 +64,18 @@ func (s *Server) servePeerMessages(conn net.Conn, info *TorrentInfo, infoHashHex
 			if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 				return
 			}
-		} else if len(body) > 0 {
-			if !s.handlePeerMessage(conn, info, infoHashHex, body, &session) {
+		} else {
+			session.lastActivity = time.Now()
+			if len(body) > 0 && !s.handlePeerMessage(conn, info, infoHashHex, body, &session) {
 				return
 			}
 		}
 
-		if !s.sendPeriodicMessages(conn, infoHashHex, &session, time.Now()) {
+		now = time.Now()
+		if now.Sub(session.lastActivity) >= peerIdleTimeout {
+			return
+		}
+		if !s.sendPeriodicMessages(conn, infoHashHex, &session, now) {
 			return
 		}
 	}

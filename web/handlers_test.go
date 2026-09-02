@@ -62,6 +62,7 @@ func (m *mockEngine) GetPausedTorrents() map[string]bool {
 	}
 	return m.paused
 }
+func (m *mockEngine) GetActiveTorrentHashes() []string { return nil }
 func (m *mockEngine) GetTrackerStats() map[string]int64 {
 	if m.trackerStats == nil {
 		return map[string]int64{}
@@ -162,6 +163,27 @@ func TestHandleConfigSaveValid(t *testing.T) {
 	}
 	if !engine.savedConfig.EnablePieceProxy {
 		t.Error("piece proxy setting was not preserved")
+	}
+}
+
+func TestHandleConfigSavePreservesWriteOnlyProxySecret(t *testing.T) {
+	_, h, engine := setupHandlers()
+	engine.cfg.ProxyEnabled = true
+	engine.cfg.ProxyType = "socks5"
+	engine.cfg.ProxyURL = "socks5://user:secret@127.0.0.1:1080"
+	payload := configSaveRequest{
+		MinUploadRate: 100, MaxUploadRate: 200, SimultaneousSeed: 1,
+		Client: "test.client", SpeedModel: config.SpeedModelUniform,
+		PeerResponseMode: config.PeerResponseModeNone, ProxyEnabled: true,
+		ProxyType: "socks5",
+	}
+	data, _ := json.Marshal(payload)
+	h.handleConfigSave(data)
+	if engine.savedConfig == nil || engine.savedConfig.ProxyURL != "socks5://user:secret@127.0.0.1:1080" {
+		t.Fatalf("write-only proxy secret was not preserved: %+v", engine.savedConfig)
+	}
+	if dashboardConfig(engine.savedConfig).ProxyURL != "" {
+		t.Fatal("dashboard config exposed proxy credentials")
 	}
 }
 

@@ -54,9 +54,18 @@ type Dispatcher struct {
 	mu            sync.RWMutex
 	totalUploaded int64 // accessed exclusively via atomic ops — mu is NOT used for this field
 	onSpeedChange func(speeds map[string]int64, totalUploaded int64)
+	onAutoPause   func(infoHashHex string)
 	stop          chan struct{}
 	done          chan struct{}
 	stopOnce      sync.Once
+}
+
+// SetAutoPauseCallback registers a callback invoked after a ratio-triggered
+// pause has been committed and the dispatcher lock has been released.
+func (d *Dispatcher) SetAutoPauseCallback(callback func(infoHashHex string)) {
+	d.mu.Lock()
+	d.onAutoPause = callback
+	d.mu.Unlock()
 }
 
 // NewDispatcher creates a Dispatcher with the given config and speed provider.
@@ -244,6 +253,7 @@ func (d *Dispatcher) tick() {
 	}
 
 	// Enforce upload ratio target: pause torrents that have reached their ratio.
+	var autoPaused []string
 	if d.config.UploadRatioTarget > 0 {
 		for hash, stat := range d.stats {
 			if d.paused[hash] {
@@ -256,6 +266,7 @@ func (d *Dispatcher) tick() {
 				if ratio >= d.config.UploadRatioTarget {
 					d.paused[hash] = true
 					d.speeds[hash] = 0
+					autoPaused = append(autoPaused, hash)
 				}
 			}
 		}
@@ -268,6 +279,11 @@ func (d *Dispatcher) tick() {
 
 	if d.onSpeedChange != nil {
 		d.onSpeedChange(speeds, total)
+	}
+	for _, hash := range autoPaused {
+		if d.onAutoPause != nil {
+			d.onAutoPause(hash)
+		}
 	}
 }
 

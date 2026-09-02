@@ -105,20 +105,6 @@ func ParseFile(path string) (*Torrent, error) {
 	return t, nil
 }
 
-// extractInfoHash locates the exact top-level "info" value span and hashes its
-// original bytes, as required by BEP 3.
-func extractInfoHash(data []byte) ([20]byte, any, []byte, error) {
-	_, value, infoBytes, end, err := decodeTorrentMetainfo(data)
-	if err != nil {
-		return [20]byte{}, nil, nil, err
-	}
-	if end != len(data) {
-		return [20]byte{}, nil, nil, fmt.Errorf("trailing data at offset %d", end)
-	}
-	hash := sha1.Sum(infoBytes)
-	return hash, value, infoBytes, nil
-}
-
 func decodeTorrentMetainfo(data []byte) (map[string]any, any, []byte, int, error) {
 	if len(data) == 0 || data[0] != 'd' {
 		return nil, nil, nil, 0, fmt.Errorf("top-level bencode value is not a dictionary")

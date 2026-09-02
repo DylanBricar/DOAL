@@ -37,6 +37,7 @@
     .toggle-slider::before { content:''; position:absolute; width:18px; height:18px; left:2px; bottom:2px; background:white; border-radius:50%; transition:0.2s; }
     .toggle input:checked + .toggle-slider { background:hsl(0 0% 98%); }
     .toggle input:checked + .toggle-slider::before { transform:translateX(20px); background:hsl(240 5.9% 10%); }
+    .toggle input:focus-visible + .toggle-slider { outline: 2px solid hsl(217 91% 60%); outline-offset: 3px; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
     html:not(.dark) {
@@ -110,7 +111,7 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
             <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="upload" class="w-3.5 h-3.5"></i>Vitesse totale</div>
-            <div class="text-2xl font-bold" id="statTotalSpeed" aria-live="polite">0<span class="stat-unit">kB/s</span></div>
+            <div class="text-2xl font-bold" id="statTotalSpeed">0<span class="stat-unit">kB/s</span></div>
             <p class="text-xs text-muted-foreground mt-1" id="statSpeedDetail">Aucun seed actif</p>
           </div>
           <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
@@ -311,11 +312,11 @@
     <footer class="border-t border-border py-3 text-center text-xs text-muted-foreground">DOAL — Outil de test anti-ratio-cheating</footer>
   </div>
 
-  <dialog id="authDialog" class="rounded-xl border border-border bg-card p-0 text-foreground shadow-2xl backdrop:bg-black/80">
+  <dialog id="authDialog" aria-labelledby="authTitle" aria-describedby="authDescription" class="rounded-xl border border-border bg-card p-0 text-foreground shadow-2xl backdrop:bg-black/80">
     <form id="authForm" method="dialog" class="w-[min(92vw,28rem)] space-y-4 p-6">
       <div>
-        <h2 class="text-base font-semibold">Authentification requise</h2>
-        <p class="mt-1 text-sm text-muted-foreground">Saisissez le token configure sur le serveur. Il reste uniquement dans cet onglet.</p>
+        <h2 id="authTitle" class="text-base font-semibold">Authentification requise</h2>
+        <p id="authDescription" class="mt-1 text-sm text-muted-foreground">Saisissez le token configuré sur le serveur. Il reste uniquement en mémoire jusqu'au rechargement de la page.</p>
       </div>
       <div>
         <label for="authToken" class="mb-1.5 block text-xs font-medium text-muted-foreground">Token du serveur</label>
@@ -365,7 +366,7 @@
   let state={connected:false,seeding:false,client:null,clientFiles:[],config:null,torrents:{},announcers:{},speeds:{},torrentUploaded:{},totalUploaded:0,history:[],pausedTorrents:{},trackerStats:{}};
   let uploadAccumulator=null;
   let reconnectTimer=null;
-  let authToken=sessionStorage.getItem('doalAuthToken')||'';
+  let authToken='';
   let awaitingAuth=false;
 
   function startUploadAccumulator(){stopUploadAccumulator();uploadAccumulator=setInterval(()=>{refreshLiveDisplay();},1000);}
@@ -437,11 +438,12 @@
   }
 
   function setupAuthentication(){
+    document.getElementById('authDialog').addEventListener('cancel',(event)=>event.preventDefault());
     document.getElementById('authForm').addEventListener('submit',(event)=>{
       event.preventDefault();
       const value=document.getElementById('authToken').value;
       if(!value){openAuthDialog('Le token est requis.');return;}
-      authToken=value;sessionStorage.setItem('doalAuthToken',value);awaitingAuth=false;
+      authToken=value;awaitingAuth=false;
       document.getElementById('authDialog').close();connect();
     });
   }
@@ -456,7 +458,8 @@
       case 'GLOBAL_SEED_STARTED': state.seeding=true; state.client=p.client; startUploadAccumulator(); updateConnectionUI();
         // Pre-fill ONLY on fresh start (not on init replay where announcers already exist)
         if(Object.keys(state.announcers).length===0){
-          Object.entries(state.torrents).forEach(([hash,t])=>{
+          const activeHashes=Array.isArray(p.activeInfoHashes)?new Set(p.activeInfoHashes.map(hashToString)):new Set();
+          Object.entries(state.torrents).filter(([hash])=>activeHashes.has(hash)).forEach(([hash,t])=>{
             state.announcers[hash]={infoHash:hash,torrentName:t.name,torrentSize:t.size,lastKnownSeeders:'-',lastKnownLeechers:'-',lastKnownInterval:1800,lastAnnouncedAt:null,requestEvent:'STARTED'};
           });
         }
@@ -471,7 +474,7 @@
         const addKey=hashToString(p.infoHash);
         state.torrents[addKey]={name:p.name,size:p.size,displayHash:addKey,rawHash:hashToRaw(p.infoHash)};
         updateTorrentFileTable(); break;
-      case 'TORRENT_FILE_DELETED': delete state.torrents[hashToString(p.infoHash)]; updateTorrentFileTable(); break;
+      case 'TORRENT_FILE_DELETED': { const deletedHash=hashToString(p.infoHash); delete state.torrents[deletedHash]; delete state.announcers[deletedHash]; delete state.speeds[deletedHash]; updateTorrentFileTable(); updateDashboard(); break; }
       case 'FAILED_TO_ADD_TORRENT_FILE': showToast('Erreur: '+p.error,'error'); notifyDesktop('DOAL', 'Erreur ajout torrent'); break;
       case 'SUCCESSFULLY_ANNOUNCE':
         const ah=hashToString(p.infoHash); state.announcers[ah]=p; updateDashboard();
@@ -488,6 +491,8 @@
       case 'INVALID_CONFIG': showToast('Config invalide: '+p.error,'error'); break;
       case 'TORRENT_PAUSED': { const ph=hashToString(p.infoHash); state.pausedTorrents[ph]=true; updateTorrentSeedTable(); break; }
       case 'TORRENT_RESUMED': { const rh=hashToString(p.infoHash); delete state.pausedTorrents[rh]; updateTorrentSeedTable(); break; }
+      case 'TORRENT_SLOT_ACTIVATED': { const sh=hashToString(p.infoHash); state.announcers[sh]={infoHash:sh,torrentName:p.name,torrentSize:p.size,lastKnownSeeders:'-',lastKnownLeechers:'-',lastKnownInterval:1800,lastAnnouncedAt:null,requestEvent:'STARTED'}; updateDashboard(); break; }
+      case 'TORRENT_SLOT_DEACTIVATED': { const sh=hashToString(p.infoHash); delete state.announcers[sh]; delete state.speeds[sh]; delete state.pausedTorrents[sh]; updateDashboard(); break; }
       case 'TRACKER_STATS':
         state.trackerStats={};
         (p.trackers||[]).forEach(t=>{state.trackerStats[t.domain]={totalUploaded:t.totalUploaded,torrentCount:t.torrentCount,paused:t.paused};});
@@ -701,18 +706,17 @@
   }
 
   // ===== History =====
-  function addHistoryEntry(level,title,detail){
-    const time=new Date().toLocaleTimeString('fr-FR');
+  function renderHistory(){
     const icons={success:'check-circle',error:'x-circle',info:'info',warning:'alert-triangle'};
     const colors={success:'border-l-emerald-500 bg-emerald-500/5',error:'border-l-red-500 bg-red-500/5',info:'border-l-blue-500 bg-blue-500/5',warning:'border-l-amber-500 bg-amber-500/5'};
     const iconColors={success:'text-emerald-500',error:'text-red-500',info:'text-blue-500',warning:'text-amber-500'};
-    const c=document.getElementById('historyLog');if(c.querySelector('.empty-state'))c.innerHTML='';
-    const e=document.createElement('div');e.className='flex items-start gap-3 rounded-lg border border-border/50 border-l-[3px] '+colors[level]+' px-4 py-3 text-sm transition-all hover:border-border';
-    e.innerHTML=`<i data-lucide="${icons[level]||'info'}" class="w-4 h-4 mt-0.5 shrink-0 ${iconColors[level]||'text-muted-foreground'}"></i><span class="text-[11px] text-muted-foreground font-mono whitespace-nowrap mt-0.5 tabular-nums">${time}</span><div class="flex-1 min-w-0"><p class="font-medium text-sm">${escapeHtml(title)}</p><p class="text-xs text-muted-foreground mt-0.5 truncate">${escapeHtml(detail||'')}</p></div>`;
-    c.insertBefore(e,c.firstChild);while(c.children.length>50)c.removeChild(c.lastChild);lucide.createIcons();
-    try{sessionStorage.setItem('doalHistory',c.innerHTML);}catch(ex){sessionStorage.removeItem('doalHistory');}
+    const c=document.getElementById('historyLog');
+    if(!state.history.length){c.innerHTML='<div class="text-center py-10 text-muted-foreground empty-state"><i data-lucide="scroll-text" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">L\'historique est vide</p></div>';lucide.createIcons();return;}
+    c.innerHTML=state.history.map(entry=>`<div class="flex items-start gap-3 rounded-lg border border-border/50 border-l-[3px] ${colors[entry.level]||colors.info} px-4 py-3 text-sm transition-all hover:border-border"><i data-lucide="${icons[entry.level]||'info'}" class="w-4 h-4 mt-0.5 shrink-0 ${iconColors[entry.level]||'text-muted-foreground'}"></i><span class="text-[11px] text-muted-foreground font-mono whitespace-nowrap mt-0.5 tabular-nums">${escapeHtml(entry.time)}</span><div class="flex-1 min-w-0"><p class="font-medium text-sm">${escapeHtml(entry.title)}</p><p class="text-xs text-muted-foreground mt-0.5 truncate">${escapeHtml(entry.detail||'')}</p></div></div>`).join('');
+    lucide.createIcons();
   }
-  function clearHistory(){document.getElementById('historyLog').innerHTML='<div class="text-center py-10 text-muted-foreground empty-state"><i data-lucide="scroll-text" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Historique effacé</p></div>';lucide.createIcons();sessionStorage.removeItem('doalHistory');}
+  function addHistoryEntry(level,title,detail){state.history.unshift({level:String(level),title:String(title),detail:String(detail||''),time:new Date().toLocaleTimeString('fr-FR')});state.history=state.history.slice(0,50);renderHistory();try{sessionStorage.setItem('doalHistory',JSON.stringify(state.history));}catch(ex){sessionStorage.removeItem('doalHistory');}}
+  function clearHistory(){state.history=[];renderHistory();sessionStorage.removeItem('doalHistory');}
 
   // ===== Navigation =====
   function activateTab(tab){
@@ -747,7 +751,8 @@
     if(!canvas)return;
     const box=canvas.parentElement.getBoundingClientRect(),ratio=window.devicePixelRatio||1;
     const width=Math.max(1,Math.floor(box.width)),height=Math.max(1,Math.floor(box.height));
-    if(canvas.width!==width*ratio||canvas.height!==height*ratio){canvas.width=width*ratio;canvas.height=height*ratio;}
+    const backingWidth=Math.max(1,Math.round(width*ratio)),backingHeight=Math.max(1,Math.round(height*ratio));
+    if(canvas.width!==backingWidth||canvas.height!==backingHeight){canvas.width=backingWidth;canvas.height=backingHeight;}
     const ctx=canvas.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height);
     const values=speedHistory.length?speedHistory:[0],max=Math.max(1024,...values),pad=8;
     const point=(value,index)=>({x:pad+(width-pad*2)*(values.length===1?1:index/(values.length-1)),y:height-pad-(height-pad*2)*(value/max)});
@@ -782,10 +787,6 @@
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
       new Notification(title, { body, icon: './favicon.ico' });
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then(p => {
-        if (p === 'granted') new Notification(title, { body, icon: './favicon.ico' });
-      });
     }
   }
 
@@ -796,7 +797,7 @@
     const savedTheme = localStorage.getItem('doalTheme');
     if (savedTheme === 'light') { document.documentElement.classList.remove('dark'); }
     const savedHistory=sessionStorage.getItem('doalHistory');
-    if(savedHistory){document.getElementById('historyLog').innerHTML=savedHistory;lucide.createIcons();}
+    if(savedHistory){try{const parsed=JSON.parse(savedHistory);if(Array.isArray(parsed))state.history=parsed.slice(0,50).filter(entry=>entry&&typeof entry.title==='string'&&typeof entry.detail==='string'&&typeof entry.time==='string'&&typeof entry.level==='string');}catch(error){sessionStorage.removeItem('doalHistory');}renderHistory();}
     // Auto-connect to the same server that serves this page
     connect();
   });

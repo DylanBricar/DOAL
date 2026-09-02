@@ -17,8 +17,12 @@ type Client struct {
 	conn          *websocket.Conn
 	subscriptions map[string]string // subID -> destination
 	mu            sync.Mutex
+	writeMu       sync.Mutex
 	authenticated bool
 	username      string
+	outbound      chan []byte
+	done          chan struct{}
+	closeOnce     sync.Once
 }
 
 // stompFrame holds a parsed STOMP frame.
@@ -95,23 +99,68 @@ func marshalFrame(command string, headers map[string]string, body []byte) []byte
 
 // sendFrame writes a STOMP frame to the client's WebSocket connection.
 func (c *Client) sendFrame(command string, headers map[string]string, body []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if err := c.conn.SetWriteDeadline(time.Now().Add(webSocketWriteTimeout)); err != nil {
 		return err
 	}
 	return c.conn.WriteMessage(websocket.TextMessage, marshalFrame(command, headers, body))
 }
 
+func (c *Client) enqueueFrame(command string, headers map[string]string, body []byte) bool {
+	frame := marshalFrame(command, headers, body)
+	if c.outbound == nil {
+		return c.sendFrame(command, headers, body) == nil
+	}
+	select {
+	case c.outbound <- frame:
+		return true
+	default:
+		c.close()
+		return false
+	}
+}
+
+func (c *Client) writeLoop() {
+	for {
+		select {
+		case frame := <-c.outbound:
+			c.writeMu.Lock()
+			err := c.conn.SetWriteDeadline(time.Now().Add(webSocketWriteTimeout))
+			if err == nil {
+				err = c.conn.WriteMessage(websocket.TextMessage, frame)
+			}
+			c.writeMu.Unlock()
+			if err != nil {
+				c.close()
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *Client) close() {
+	c.closeOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+	})
+}
+
 // sendError sends a STOMP ERROR frame and closes the connection.
 // Uses its own lock rather than sendFrame to atomically write and close.
 func (c *Client) sendError(message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
 	headers := map[string]string{"message": message}
 	_ = c.conn.SetWriteDeadline(time.Now().Add(webSocketWriteTimeout))
 	_ = c.conn.WriteMessage(websocket.TextMessage, marshalFrame("ERROR", headers, []byte(message)))
-	_ = c.conn.Close()
+	c.writeMu.Unlock()
+	c.close()
 }
 
 // SendToAll sends a STOMP MESSAGE frame to all clients subscribed to destination.
@@ -157,11 +206,56 @@ func (s *Server) SendToAll(destination string, payload interface{}) {
 			"content-type":   "application/json",
 			"content-length": fmt.Sprintf("%d", len(body)),
 		}
-		if err := c.sendFrame("MESSAGE", headers, body); err != nil {
-			fmt.Printf("stomp: sending to client %s: %v\n", c.id, err)
-			c.conn.Close()
+		if !c.enqueueFrame("MESSAGE", headers, body) {
+			fmt.Printf("stomp: closing slow client %s\n", c.id)
 			s.removeClient(c)
 		}
+	}
+}
+
+// SendToClient sends one message to a specific authenticated subscriber.
+func (s *Server) SendToClient(clientID, destination string, payload interface{}) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Printf("stomp: marshalling payload for %q: %v\n", destination, err)
+		return
+	}
+	s.mu.RLock()
+	var target *Client
+	for client := range s.clients {
+		if client.id == clientID {
+			target = client
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if target == nil {
+		return
+	}
+	target.mu.Lock()
+	if !target.authenticated {
+		target.mu.Unlock()
+		return
+	}
+	subID := ""
+	for id, subscribedDestination := range target.subscriptions {
+		if subscribedDestination == destination {
+			subID = id
+			break
+		}
+	}
+	target.mu.Unlock()
+	if subID == "" {
+		return
+	}
+	headers := map[string]string{
+		"subscription":   subID,
+		"destination":    destination,
+		"content-type":   "application/json",
+		"content-length": fmt.Sprintf("%d", len(body)),
+	}
+	if !target.enqueueFrame("MESSAGE", headers, body) {
+		s.removeClient(target)
 	}
 }
 
@@ -291,5 +385,5 @@ func (s *Server) handleDisconnect(c *Client, frame *stompFrame) {
 		_ = c.sendFrame("RECEIPT", headers, nil)
 	}
 	s.removeClient(c)
-	c.conn.Close()
+	c.close()
 }
