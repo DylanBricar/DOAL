@@ -2,10 +2,21 @@ package announce
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLoadClientConfigRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.client")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, maxClientConfigBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadClientConfig(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("LoadClientConfig error = %v, want size limit", err)
+	}
+}
 
 // clientFiles returns all .client files, skipping the test if none exist.
 func clientFiles(t *testing.T) []string {

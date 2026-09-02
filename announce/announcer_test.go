@@ -1,13 +1,44 @@
 package announce
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"doal/torrent"
 )
+
+func TestAnnounceContextCancelsBlockedTracker(t *testing.T) {
+	requestStarted := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	tor := testTorrent(srv.URL + "/announce")
+	a := newAnnouncer(tor, testClientConfig(), srv.Client())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.AnnounceContext(ctx, AnnounceParams{InfoHash: tor.InfoHash, Port: 6881})
+		done <- err
+	}()
+	<-requestStarted
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("AnnounceContext error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AnnounceContext did not stop after cancellation")
+	}
+}
 
 // testTorrent builds a torrent pointing at the given tracker URL.
 func testTorrent(trackerURL string) *torrent.Torrent {
