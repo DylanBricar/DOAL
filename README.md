@@ -20,10 +20,10 @@ Download from [Releases](../../releases) — available for:
 ```bash
 git clone <this-repo>
 cd doal-go
-go build -ldflags="-s -w" -o doal .
+go build -trimpath -ldflags="-s -w" -o doal .
 ```
 
-Requires Go 1.23+.
+Requires Go 1.27+. Node.js 24 LTS is only needed when rebuilding the embedded web assets with `npm ci` and `npm run build:web`.
 
 ---
 
@@ -49,7 +49,7 @@ Then open **http://localhost:5082/** (auto-redirects to the UI)
 ```
 your-config-dir/
 ├── config.json          # Main configuration
-├── clients/             # 90+ BitTorrent client profiles (.client files)
+├── clients/             # 94 BitTorrent client profiles (.client files)
 ├── torrents/            # Drop .torrent files here
 │   ├── movie.torrent    # Torrent metadata
 │   └── movie.mkv        # (Optional) Real file for SHA-1 piece verification
@@ -77,7 +77,7 @@ All settings are configurable via the web UI or directly in `config.json`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `client` | string | `utorrent-3.5.0_43916.client` | BitTorrent client to emulate (90+ profiles) |
+| `client` | string | `utorrent-3.5.0_43916.client` | BitTorrent client to emulate (94 profiles) |
 | `speedModel` | string | `ORGANIC` | Speed variation model (`ORGANIC` = realistic, `UNIFORM` = constant) |
 | `announceJitterPercent` | int | `10` | Random variation on announce intervals (0-30%) |
 | `peerResponseMode` | string | `BITFIELD` | How to respond to peer connections (`NONE`, `HANDSHAKE_ONLY`, `BITFIELD`, `FAKE_DATA`) |
@@ -120,7 +120,7 @@ exceed eight counterparties.
 
 | # | Feature | Description |
 |---|---------|-------------|
-| 1 | **Client Emulation** | 90+ client profiles with correct User-Agent, peer_id, key, query string order |
+| 1 | **Client Emulation** | 94 client profiles with correct User-Agent, peer_id, key, query string order |
 | 2 | **uTLS Fingerprint** | Browser presets or an OpenSSL-style libtorrent ClientHello, with HTTP/1.1-only ALPN |
 | 3 | **Organic Speed** | Independent heavy-tailed random walk, momentum, micro-jitter and real zero plateaus per torrent |
 | 4 | **Speed Warmup** | Per-torrent randomized delay and 45-180 second ramp from a true zero |
@@ -198,7 +198,7 @@ piece requests.
 ## Development
 
 ```bash
-# Run tests (255 tests across 7 packages)
+# Run the complete test suite
 go test ./... -count=1 -timeout=120s
 
 # Run with race detector
@@ -208,7 +208,7 @@ go test ./... -race
 go vet ./...
 
 # Build optimized binary
-go build -ldflags="-s -w" -o doal .
+go build -trimpath -ldflags="-s -w" -o doal .
 ```
 
 ### Project structure
@@ -227,7 +227,7 @@ doal-go/
 ├── announce/
 │   ├── announcer.go        # HTTP tracker announce
 │   ├── scheduler.go        # Multi-torrent scheduler + jitter
-│   ├── client_emulator.go  # 90+ client profiles
+│   ├── client_emulator.go  # Client profile parsing and emulation
 │   └── tls.go              # uTLS fingerprint spoofing
 ├── peerwire/
 │   ├── server.go           # BT handshake + bitfield + BEP10 + PEX

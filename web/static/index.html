@@ -8,35 +8,10 @@
   <meta name="theme-color" content="#09090b">
   <title>DOAL - Panneau de Contrôle</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: { sans: ['Inter', 'sans-serif'] },
-          colors: {
-            border: 'hsl(240 3.7% 15.9%)',
-            input: 'hsl(240 3.7% 15.9%)',
-            ring: 'hsl(240 4.9% 83.9%)',
-            background: 'hsl(240 10% 3.9%)',
-            foreground: 'hsl(0 0% 98%)',
-            card: { DEFAULT: 'hsl(240 10% 3.9%)', foreground: 'hsl(0 0% 98%)' },
-            muted: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
-            accent: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
-            primary: { DEFAULT: 'hsl(0 0% 98%)', foreground: 'hsl(240 5.9% 10%)' },
-            destructive: { DEFAULT: 'hsl(0 62.8% 30.6%)', foreground: 'hsl(0 0% 98%)' },
-          },
-          borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' },
-        }
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="./app.css">
+  <script src="./lucide.min.js" defer></script>
   <style>
-    body { font-family: 'Inter', sans-serif; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: hsl(240 3.7% 15.9%); border-radius: 3px; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
     .status-dot.pulse { animation: pulse 2s infinite; }
@@ -89,6 +64,9 @@
     html:not(.dark) .nav-tab.active::after { background: #09090b; }
     html:not(.dark) th { background: #f4f4f5; color: #52525b; }
     html:not(.dark) footer { background: #ffffff; border-top-color: #e4e4e7; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+    }
   </style>
 </head>
 <body class="bg-background text-foreground min-h-screen">
@@ -97,8 +75,8 @@
     <header class="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-xl">
       <div class="flex h-14 items-center justify-between px-6">
         <div class="flex items-center gap-4">
-          <span class="text-lg font-bold tracking-tight">DOAL</span>
-          <span id="connStatus" class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-500/10 text-red-400">
+          <h1 class="text-lg font-bold tracking-tight">DOAL</h1>
+          <span id="connStatus" role="status" aria-live="polite" class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-500/10 text-red-400">
             <span class="status-dot"></span> <span>Déconnecté</span>
           </span>
           <span id="seedStatus" class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-500/10 text-blue-400" style="display:none">
@@ -108,7 +86,7 @@
         <div class="flex items-center gap-2">
           <button id="btnStart" class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 transition disabled:opacity-40" onclick="startSeeding()" disabled><i data-lucide="play" class="w-3.5 h-3.5"></i> Démarrer</button>
           <button id="btnStop" class="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 transition disabled:opacity-40" onclick="stopSeeding()" disabled style="display:none"><i data-lucide="power" class="w-3.5 h-3.5"></i> Arrêter</button>
-          <button class="inline-flex items-center rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition" onclick="toggleTheme()" id="themeBtn"><i data-lucide="moon" class="w-3.5 h-3.5"></i></button>
+          <button class="inline-flex min-h-8 min-w-8 items-center justify-center rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition" onclick="toggleTheme()" id="themeBtn" aria-label="Changer le thème" title="Changer le thème"><i data-lucide="moon" class="w-3.5 h-3.5"></i></button>
           <!-- settings button removed: auto-connect -->
         </div>
       </div>
@@ -116,10 +94,10 @@
 
     <!-- Tabs -->
     <div class="border-b border-border bg-background">
-      <nav class="flex px-6 gap-1">
-        <button class="nav-tab active relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="dashboard">Tableau de Bord</button>
-        <button class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="config">Configuration</button>
-        <button class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="history">Historique</button>
+      <nav class="flex px-6 gap-1" role="tablist" aria-label="Sections du panneau">
+        <button id="nav-dashboard" role="tab" aria-selected="true" aria-controls="tab-dashboard" class="nav-tab active relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="dashboard">Tableau de Bord</button>
+        <button id="nav-config" role="tab" aria-selected="false" aria-controls="tab-config" tabindex="-1" class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="config">Configuration</button>
+        <button id="nav-history" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1" class="nav-tab relative px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition" data-tab="history">Historique</button>
       </nav>
     </div>
 
@@ -127,12 +105,12 @@
     <main class="flex-1 p-6 max-w-[1400px] mx-auto w-full">
 
       <!-- DASHBOARD -->
-      <div id="tab-dashboard" class="tab-content active">
+      <div id="tab-dashboard" role="tabpanel" aria-labelledby="nav-dashboard" class="tab-content active">
         <!-- Stats -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
             <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2"><i data-lucide="upload" class="w-3.5 h-3.5"></i>Vitesse totale</div>
-            <div class="text-2xl font-bold" id="statTotalSpeed">0<span class="stat-unit">kB/s</span></div>
+            <div class="text-2xl font-bold" id="statTotalSpeed" aria-live="polite">0<span class="stat-unit">kB/s</span></div>
             <p class="text-xs text-muted-foreground mt-1" id="statSpeedDetail">Aucun seed actif</p>
           </div>
           <div class="rounded-lg border border-border bg-card p-5 hover:bg-accent/50 transition">
@@ -155,7 +133,7 @@
         <!-- Speed Chart -->
         <div class="rounded-lg border border-border bg-card p-5 mb-6">
           <h3 class="text-sm font-semibold mb-3">Vitesse d'Upload</h3>
-          <div style="position:relative;height:120px"><canvas id="speedChart"></canvas></div>
+          <div style="position:relative;height:120px"><canvas id="speedChart" role="img" aria-label="Historique de la vitesse totale d'upload sur 60 secondes"></canvas></div>
         </div>
 
         <!-- Seed Table -->
@@ -203,12 +181,12 @@
         <div class="rounded-lg border border-border bg-card">
           <div class="p-5 pb-3"><h3 class="text-sm font-semibold">Ajouter des Torrents</h3></div>
           <div class="px-5">
-            <div id="dropzone" class="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-muted-foreground transition mb-4">
+            <button type="button" id="dropzone" class="w-full border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-muted-foreground transition mb-4" aria-describedby="dropzoneHelp">
               <i data-lucide="upload-cloud" class="w-8 h-8 mx-auto mb-2 text-muted-foreground"></i>
               <p class="text-sm text-muted-foreground">Déposez des fichiers .torrent ici</p>
-              <p class="text-xs text-muted-foreground/60 mt-1">ou cliquez pour parcourir</p>
-              <input type="file" id="fileInput" accept=".torrent" multiple class="hidden">
-            </div>
+              <p id="dropzoneHelp" class="text-xs text-muted-foreground/60 mt-1">ou cliquez pour parcourir</p>
+            </button>
+            <input type="file" id="fileInput" accept=".torrent" multiple class="sr-only">
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
@@ -226,7 +204,7 @@
       </div>
 
       <!-- CONFIG -->
-      <div id="tab-config" class="tab-content">
+      <div id="tab-config" role="tabpanel" aria-labelledby="nav-config" class="tab-content">
         <div class="rounded-lg border border-border bg-card p-6">
           <div class="flex items-center justify-between mb-6">
             <div><h3 class="text-sm font-semibold">Configuration</h3><p class="text-xs text-muted-foreground mt-0.5">Paramètres du moteur de seed et anti-détection</p></div>
@@ -317,7 +295,7 @@
       </div>
 
       <!-- HISTORY -->
-      <div id="tab-history" class="tab-content">
+      <div id="tab-history" role="tabpanel" aria-labelledby="nav-history" class="tab-content">
         <div class="rounded-lg border border-border bg-card p-6">
           <div class="flex items-center justify-between mb-4">
             <div><h3 class="text-sm font-semibold">Historique</h3><p class="text-xs text-muted-foreground mt-0.5">Journal en temps réel</p></div>
@@ -348,7 +326,7 @@
     </form>
   </dialog>
 
-  <div class="toast-container" id="toastContainer"></div>
+  <div class="toast-container" id="toastContainer" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <script>
   // ===== STOMP Client =====
@@ -409,20 +387,13 @@
       const sp=state.speeds[el.dataset.speedHash]||0;
       el.textContent='\u2191 '+(sp*(1+(Math.random()-0.5)*0.04)/1024).toFixed(1)+' kB/s';
     });
+    document.querySelectorAll('[data-upload-hash]').forEach(el=>{el.textContent=formatSize(state.torrentUploaded[el.dataset.uploadHash]||0);});
     updateUploadDisplay();
     document.getElementById('statTorrentDetail').textContent=Object.keys(state.torrents).length+' torrents chargés';
     document.getElementById('statActiveTorrents').textContent=ac;
-    if (speedChart) {
-      speedChart.data.datasets[0].data.push(dt);
-      if (speedChart.data.datasets[0].data.length > MAX_HISTORY) {
-        speedChart.data.datasets[0].data.shift();
-      }
-      speedChart.data.labels.push('');
-      if (speedChart.data.labels.length > MAX_HISTORY) {
-        speedChart.data.labels.shift();
-      }
-      speedChart.update('none');
-    }
+    speedHistory.push(dt);
+    if(speedHistory.length>MAX_HISTORY)speedHistory.shift();
+    drawSpeedChart();
   }
 
   // ===== Connection =====
@@ -513,7 +484,7 @@
       case 'SEEDING_SPEED_HAS_CHANGED':
         state.speeds={}; state.torrentUploaded={}; (p.speeds||[]).forEach(s=>{state.speeds[hashToString(s.infoHash)]=s.bytesPerSecond; state.torrentUploaded[hashToString(s.infoHash)]=s.uploaded||0;});
         if(p.totalUploaded!=null&&p.totalUploaded>0)state.totalUploaded=p.totalUploaded;
-        updateDashboard(); break;
+        refreshLiveDisplay(); break;
       case 'INVALID_CONFIG': showToast('Config invalide: '+p.error,'error'); break;
       case 'TORRENT_PAUSED': { const ph=hashToString(p.infoHash); state.pausedTorrents[ph]=true; updateTorrentSeedTable(); break; }
       case 'TORRENT_RESUMED': { const rh=hashToString(p.infoHash); delete state.pausedTorrents[rh]; updateTorrentSeedTable(); break; }
@@ -530,17 +501,18 @@
   // ===== Actions =====
   function startSeeding(){if(stomp&&stomp.connected)stomp.send('/doal/global/start','');}
   function stopSeeding(){if(stomp&&stomp.connected)stomp.send('/doal/global/stop','');}
+  function numericValue(id,fallback){const value=Number(document.getElementById(id).value);return Number.isFinite(value)?value:fallback;}
   function saveConfig(){
     if(!stomp||!stomp.connected){showToast('Non connecté','error');return;}
     stomp.send('/doal/config/save',JSON.stringify({
-      minUploadRate:parseInt(document.getElementById('cfgMinUpload').value)||0,
-      maxUploadRate:parseInt(document.getElementById('cfgMaxUpload').value)||0,
-      simultaneousSeed:parseInt(document.getElementById('cfgSimultaneous').value)||1,
+      minUploadRate:numericValue('cfgMinUpload',0),
+      maxUploadRate:numericValue('cfgMaxUpload',0),
+      simultaneousSeed:numericValue('cfgSimultaneous',1),
       client:document.getElementById('cfgClient').value,
       keepTorrentWithZeroLeechers:document.getElementById('cfgKeepZeroLeechers').checked,
-      uploadRatioTarget:parseFloat(document.getElementById('cfgRatioTarget').value)||-1,
+      uploadRatioTarget:numericValue('cfgRatioTarget',-1),
       speedModel:document.getElementById('cfgSpeedModel').value,
-      announceJitterPercent:parseInt(document.getElementById('cfgJitter').value)||0,
+      announceJitterPercent:numericValue('cfgJitter',0),
       peerResponseMode:document.getElementById('cfgPeerResponse').value,
       perTorrentBandwidth:document.getElementById('cfgPerTorrent').checked,
       simulateDownload:document.getElementById('cfgSimDownload').checked,
@@ -548,16 +520,16 @@
       rotateClientOnRestart:document.getElementById('cfgRotateClient').checked,
       swarmAwareSpeed:document.getElementById('cfgSwarmAware').checked,
       enableSchedule:document.getElementById('cfgEnableSchedule').checked,
-      scheduleStartHour:parseInt(document.getElementById('cfgScheduleStart').value)||22,
-      scheduleEndHour:parseInt(document.getElementById('cfgScheduleEnd').value)||7,
+      scheduleStartHour:numericValue('cfgScheduleStart',22),
+      scheduleEndHour:numericValue('cfgScheduleEnd',7),
       proxyEnabled:document.getElementById('cfgProxyEnabled').checked,
       proxyType:document.getElementById('cfgProxyType').value,
       proxyUrl:document.getElementById('cfgProxyUrl').value,
       announceIp:document.getElementById('cfgAnnounceIp').value,
-      maxAnnounceFailures:parseInt(document.getElementById('cfgMaxFailures').value)||0,
+      maxAnnounceFailures:numericValue('cfgMaxFailures',0),
       dhtBootstrapNodes:document.getElementById('cfgDHTBootstrap').value.split(',').map(v=>v.trim()).filter(Boolean),
       enableLabSybilRing:document.getElementById('cfgLabSybilRing').checked,
-      labSybilPeers:parseInt(document.getElementById('cfgLabSybilPeers').value)||0,
+      labSybilPeers:numericValue('cfgLabSybilPeers',0),
       enablePieceProxy:document.getElementById('cfgPieceProxy').checked
     }));
     showToast('Configuration sauvegardée','success');
@@ -640,12 +612,12 @@
       const actionIcon=paused?'play':'pause';
       return `<tr class="hover:bg-accent/30 transition"><td class="px-4 py-2.5 text-sm font-medium max-w-[300px] truncate">${escapeHtml(name)}</td><td class="px-4 py-2.5 text-xs text-muted-foreground">${size}</td>
         <td class="px-4 py-2.5"><span class="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400" data-speed-hash="${escapeHtml(hash)}">\u2191 ${escapeHtml(spStr)} kB/s</span></td>
-        <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(upStr)}</td>
+        <td class="px-4 py-2.5 text-xs text-muted-foreground" data-upload-hash="${escapeHtml(hash)}">${escapeHtml(upStr)}</td>
         <td class="px-4 py-2.5"><span class="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-400">S ${escapeHtml(String(se))}</span></td>
         <td class="px-4 py-2.5"><span class="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-400">L ${escapeHtml(String(le))}</span></td>
         <td class="px-4 py-2.5">${progressCell}</td>
         <td class="px-4 py-2.5 text-xs text-muted-foreground">${escapeHtml(String(la))}</td>
-        <td class="px-4 py-2.5"><button class="btn-pause-torrent inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition" data-idx="${idx}"><i data-lucide="${actionIcon}" class="w-3.5 h-3.5"></i></button></td></tr>`;
+        <td class="px-4 py-2.5"><button class="btn-pause-torrent inline-flex min-h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition" data-idx="${idx}" aria-label="${paused?'Reprendre':'Suspendre'} ${escapeHtml(name)}" title="${paused?'Reprendre':'Suspendre'}"><i data-lucide="${actionIcon}" class="w-3.5 h-3.5"></i></button></td></tr>`;
     }).join('');
     const annEntries=anns;
     tbody.querySelectorAll('.btn-pause-torrent').forEach(btn=>{
@@ -690,7 +662,7 @@
     if(ts.length===0){tbody.innerHTML='<tr><td colspan="3"><div class="text-center py-8 text-muted-foreground"><i data-lucide="folder" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Aucun torrent chargé</p></div></td></tr>';lucide.createIcons();return;}
     const torrentEntries=ts;
     tbody.innerHTML=ts.map(([hash,t],idx)=>`<tr class="hover:bg-accent/30 transition"><td class="px-4 py-2.5 text-sm max-w-[400px] truncate">${escapeHtml(t.name)}</td><td class="px-4 py-2.5 text-xs text-muted-foreground">${formatSize(t.size)}</td>
-      <td class="px-4 py-2.5"><button class="btn-del-torrent inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-red-400 hover:border-red-400/50 transition" data-idx="${idx}"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></td></tr>`).join('');
+      <td class="px-4 py-2.5"><button class="btn-del-torrent inline-flex min-h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-red-400 hover:border-red-400/50 transition" data-idx="${idx}" aria-label="Supprimer ${escapeHtml(t.name)}" title="Supprimer"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></td></tr>`).join('');
     tbody.querySelectorAll('.btn-del-torrent').forEach(btn=>{
       btn.addEventListener('click',()=>{
         const i=parseInt(btn.dataset.idx);
@@ -743,10 +715,14 @@
   function clearHistory(){document.getElementById('historyLog').innerHTML='<div class="text-center py-10 text-muted-foreground empty-state"><i data-lucide="scroll-text" class="w-8 h-8 mx-auto mb-2 opacity-40"></i><p class="text-sm">Historique effacé</p></div>';lucide.createIcons();sessionStorage.removeItem('doalHistory');}
 
   // ===== Navigation =====
-  document.querySelectorAll('.nav-tab').forEach(tab=>{tab.addEventListener('click',()=>{
-    document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-    tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
-  });});
+  function activateTab(tab){
+    document.querySelectorAll('.nav-tab').forEach(t=>{const active=t===tab;t.classList.toggle('active',active);t.setAttribute('aria-selected',String(active));t.tabIndex=active?0:-1;});
+    document.querySelectorAll('.tab-content').forEach(panel=>panel.classList.toggle('active',panel.id==='tab-'+tab.dataset.tab));
+  }
+  document.querySelectorAll('.nav-tab').forEach(tab=>{
+    tab.addEventListener('click',()=>activateTab(tab));
+    tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const tabs=[...document.querySelectorAll('.nav-tab')],current=tabs.indexOf(tab);let next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(current+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;activateTab(tabs[next]);tabs[next].focus();});
+  });
 
   // ===== Toast & Modal =====
   function showToast(msg,type){const c=document.getElementById('toastContainer'),t=document.createElement('div');t.className='toast '+(type||'info');t.textContent=msg;c.appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),300);},4000);}
@@ -758,41 +734,38 @@
   function escapeHtml(s){if(!s)return '';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
 
   // ===== Speed Chart =====
-  let speedChart = null;
   const speedHistory = [];
   const MAX_HISTORY = 60;
 
   function initSpeedChart() {
-    const ctx = document.getElementById('speedChart').getContext('2d');
-    speedChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: Array(MAX_HISTORY).fill(''),
-        datasets: [{
-          data: Array(MAX_HISTORY).fill(0),
-          borderColor: 'rgb(16, 185, 129)',
-          backgroundColor: 'rgba(16, 185, 129, 0.1)',
-          borderWidth: 1.5,
-          fill: true,
-          tension: 0.4,
-          pointRadius: 0,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { display: false },
-          y: {
-            display: true,
-            grid: { color: 'rgba(255,255,255,0.05)' },
-            ticks: { color: 'rgba(255,255,255,0.3)', font: { size: 10 }, callback: v => (v/1024).toFixed(0) + ' kB/s' }
-          }
-        },
-        animation: { duration: 300 }
-      }
+    window.addEventListener('resize',drawSpeedChart,{passive:true});
+    drawSpeedChart();
+  }
+
+  function drawSpeedChart() {
+    const canvas=document.getElementById('speedChart');
+    if(!canvas)return;
+    const box=canvas.parentElement.getBoundingClientRect(),ratio=window.devicePixelRatio||1;
+    const width=Math.max(1,Math.floor(box.width)),height=Math.max(1,Math.floor(box.height));
+    if(canvas.width!==width*ratio||canvas.height!==height*ratio){canvas.width=width*ratio;canvas.height=height*ratio;}
+    const ctx=canvas.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height);
+    const values=speedHistory.length?speedHistory:[0],max=Math.max(1024,...values),pad=8;
+    const point=(value,index)=>({x:pad+(width-pad*2)*(values.length===1?1:index/(values.length-1)),y:height-pad-(height-pad*2)*(value/max)});
+    const gradient=ctx.createLinearGradient(0,0,0,height);gradient.addColorStop(0,'rgba(16,185,129,.28)');gradient.addColorStop(1,'rgba(16,185,129,0)');
+    ctx.beginPath();values.forEach((value,index)=>{const p=point(value,index);index?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);});
+    const last=point(values.at(-1),values.length-1);ctx.lineTo(last.x,height-pad);ctx.lineTo(pad,height-pad);ctx.closePath();ctx.fillStyle=gradient;ctx.fill();
+    ctx.beginPath();values.forEach((value,index)=>{const p=point(value,index);index?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);});
+    ctx.strokeStyle='rgb(16,185,129)';ctx.lineWidth=1.5;ctx.stroke();
+  }
+
+  function setupAccessibility(){
+    // Associate compact labels and switches without duplicating their visible text.
+    document.querySelectorAll('label:not([for])').forEach(label=>{
+      const control=label.querySelector('input,select')||label.parentElement.querySelector(':scope > input, :scope > select');
+      if(control?.id&&!label.contains(control))label.htmlFor=control.id;
+      if(control&&!control.getAttribute('aria-label')){const text=label.closest('.flex')?.querySelector('p.font-medium')?.textContent||label.textContent.trim();if(text)control.setAttribute('aria-label',text);}
     });
+    document.querySelectorAll('th').forEach(header=>header.scope='col');
   }
 
   // ===== Theme Toggle =====
@@ -818,15 +791,12 @@
 
   // ===== Init =====
   window.addEventListener('DOMContentLoaded',()=>{
-    lucide.createIcons(); setupDropzone(); setupAuthentication();
+    lucide.createIcons(); setupDropzone(); setupAuthentication(); setupAccessibility();
     initSpeedChart();
     const savedTheme = localStorage.getItem('doalTheme');
     if (savedTheme === 'light') { document.documentElement.classList.remove('dark'); }
     const savedHistory=sessionStorage.getItem('doalHistory');
     if(savedHistory){document.getElementById('historyLog').innerHTML=savedHistory;lucide.createIcons();}
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
     // Auto-connect to the same server that serves this page
     connect();
   });

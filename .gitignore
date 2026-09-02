@@ -26,3 +26,6 @@ Thumbs.db
 vendor/
 coverage.out
 *~
+
+# Frontend build dependencies
+node_modules/

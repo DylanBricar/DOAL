@@ -6,27 +6,37 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: '1.23'
-
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - name: Verify web assets
+        run: |
+          npm ci
+          npm run check:web
       - name: Vet
         run: go vet ./...
-
       - name: Test with race detector
         run: go test ./... -count=1 -timeout=120s -race -coverprofile=coverage.out
-
       - name: Coverage report
         run: go tool cover -func=coverage.out | tail -1
-
       - name: Build
         run: |
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o doal .
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o doal .
           ls -lh doal

@@ -243,9 +243,6 @@ func (c *Config) Validate() error {
 			errs = append(errs, errors.New("proxyUrl must be an absolute URL matching proxyType"))
 		}
 	}
-	if c.EnablePieceProxy && c.PeerResponseMode != PeerResponseModeFakeData {
-		errs = append(errs, errors.New("enablePieceProxy requires peerResponseMode \"FAKE_DATA\""))
-	}
 	if len(c.DHTBootstrapNodes) > MaxDHTBootstrapNodes {
 		errs = append(errs, fmt.Errorf("dhtBootstrapNodes must contain at most %d endpoints", MaxDHTBootstrapNodes))
 	}

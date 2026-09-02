@@ -58,7 +58,7 @@ func (o *OrganicSpeedProvider) Refresh() {
 	defer o.mu.Unlock()
 
 	// Nudge current speed toward a new random target in [min, max].
-	rng := float64(o.maxRate-o.minRate)
+	rng := float64(o.maxRate - o.minRate)
 	target := float64(o.minRate) + rand.Float64()*rng
 	o.current = o.current*0.5 + target*0.5
 	o.momentum = 0

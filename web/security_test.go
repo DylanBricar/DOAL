@@ -57,6 +57,11 @@ func TestEmbeddedUISupportsAuthenticatedRemoteMode(t *testing.T) {
 	if !strings.Contains(page, "type=\"password\"") {
 		t.Fatal("embedded UI has no secure token input for remote mode")
 	}
+	for _, remote := range []string{"cdn.tailwindcss.com", "unpkg.com", "cdn.jsdelivr.net", "fonts.googleapis.com", "new Chart("} {
+		if strings.Contains(page, remote) {
+			t.Errorf("embedded UI still depends on %q", remote)
+		}
+	}
 }
 
 func TestWebSocketOriginPolicy(t *testing.T) {

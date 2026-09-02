@@ -440,27 +440,6 @@ func generateChecksummedPeerID(cfg peerIDAlgorithmConfig) (string, error) {
 	return cfg.Prefix + string(suffix), nil
 }
 
-// buildFillChars extracts a character set from the tail of a regex pattern.
-// It looks for the first character class [...] or range \x01-\xff and returns
-// the matching byte slice.
-func buildFillChars(tail string) []byte {
-	if tail == "" {
-		return nil
-	}
-
-	// Look for a character class like [A-Za-z0-9_~\(\)!\.\*-]
-	start := strings.Index(tail, "[")
-	end := strings.Index(tail, "]")
-	if start >= 0 && end > start {
-		classStr := tail[start+1 : end]
-		return expandCharClass(classStr)
-	}
-
-	// Look for raw byte range like \u0001-\u00ff (already decoded as runes).
-	// In this case just use printable ASCII.
-	return []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-}
-
 // expandCharClass expands a character class string (contents between [ and ])
 // into the set of bytes it represents.
 func expandCharClass(class string) []byte {

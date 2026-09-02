@@ -134,7 +134,7 @@ func TestHandleConfigSaveValid(t *testing.T) {
 		SimultaneousSeed:   2,
 		Client:             "some.client",
 		SpeedModel:         config.SpeedModelUniform,
-		PeerResponseMode:   config.PeerResponseModeNone,
+		PeerResponseMode:   config.PeerResponseModeFakeData,
 		DHTBootstrapNodes:  []string{"127.0.0.1:6882"},
 		EnableLabSybilRing: true,
 		LabSybilPeers:      4,

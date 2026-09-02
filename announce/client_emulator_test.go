@@ -10,7 +10,7 @@ import (
 
 func TestLoadClientConfigRejectsOversizedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "oversized.client")
-	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, maxClientConfigBytes+1), 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, int(maxClientConfigBytes+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadClientConfig(path); err == nil || !strings.Contains(err.Error(), "exceeds") {

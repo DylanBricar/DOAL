@@ -1,186 +1,161 @@
-name: "Release"
+name: Release
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: '1.23'
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - run: npm ci
+      - run: npm run check:web
       - run: go vet ./...
       - run: go test ./... -count=1 -timeout=120s
 
   create-release:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release-id: ${{ steps.create-release.outputs.result }}
-      version: ${{ steps.get-version.outputs.version }}
+      version: ${{ steps.get-version.outputs.result }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
+          persist-credentials: false
       - name: Compute next version
         id: get-version
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           result-encoding: string
           script: |
             const { data: releases } = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              per_page: 100
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100
             });
-            const tags = releases
-              .map(r => r.tag_name)
-              .filter(t => /^v\d+\.\d+\.\d+$/.test(t))
-              .sort((a, b) => {
-                const pa = a.slice(1).split('.').map(Number);
-                const pb = b.slice(1).split('.').map(Number);
-                return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
-              });
-            let next;
-            if (tags.length === 0) {
-              next = '1.0.0';
-            } else {
-              const latest = tags[tags.length - 1].slice(1).split('.').map(Number);
-              latest[2] += 1;
-              next = latest.join('.');
-            }
-            core.setOutput('version', next);
-            return next;
-
+            const versions = releases.map(r => r.tag_name)
+              .filter(tag => /^v\d+\.\d+\.\d+$/.test(tag))
+              .map(tag => tag.slice(1).split('.').map(Number))
+              .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+            if (!versions.length) return '1.0.0';
+            const latest = versions.at(-1);
+            return [latest[0], latest[1], latest[2] + 1].join('.');
       - name: Generate changelog
         id: changelog
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           result-encoding: string
           script: |
-            const version = '${{ steps.get-version.outputs.version }}';
+            const version = '${{ steps.get-version.outputs.result }}';
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner, repo: context.repo.repo, per_page: 5
             });
-            const prevTag = releases.find(r => !r.draft)?.tag_name || '';
+            const previous = releases.find(release => !release.draft)?.tag_name || '';
             let commits = [];
-            if (prevTag) {
+            if (previous) {
               try {
-                const { data: comp } = await github.rest.repos.compareCommits({
+                const { data } = await github.rest.repos.compareCommits({
                   owner: context.repo.owner, repo: context.repo.repo,
-                  base: prevTag, head: 'main'
+                  base: previous, head: context.sha
                 });
-                commits = comp.commits.map(c => c.commit.message.split('\n')[0]);
-              } catch (e) {}
+                commits = data.commits.map(commit => commit.commit.message.split('\n')[0]);
+              } catch (error) {
+                core.warning('Unable to generate commit list: ' + error.message);
+              }
             }
-            const groups = { 'Features': [], 'Bug Fixes': [], 'Improvements': [], 'Other': [] };
-            for (const msg of commits) {
-              if (msg.startsWith('feat')) groups['Features'].push(msg);
-              else if (msg.startsWith('fix')) groups['Bug Fixes'].push(msg);
-              else if (/^(refactor|perf|chore)/.test(msg)) groups['Improvements'].push(msg);
-              else if (!/^[Mm]erge/.test(msg)) groups['Other'].push(msg);
-            }
-            let body = `## DOAL v${version}\n\nBitTorrent fake-seeding tool with 18 anti-detection features.\n\n`;
-            body += `### Quick Start\n    ./doal --conf=. --port=5082 --path-prefix=doal --secret-token=x\nThen open http://localhost:5082/\n\n`;
-            for (const [title, items] of Object.entries(groups)) {
-              if (!items.length) continue;
-              body += `### ${title}\n`;
-              for (const item of items) body += `- ${item.replace(/^(feat|fix|refactor|perf|chore)(\(.*?\))?:\s*/, '')}\n`;
-              body += '\n';
-            }
-            if (prevTag) body += `**Full Changelog**: https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${prevTag}...v${version}\n`;
+            let body = '## DOAL v' + version + '\n\nBitTorrent seeding test tool.\n\n';
+            if (commits.length) body += commits.map(message => '- ' + message).join('\n') + '\n';
+            if (previous) body += '\n**Full Changelog**: https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/compare/' + previous + '...v' + version + '\n';
             return body;
-
-      - name: Create Draft Release
+      - name: Create draft release
         id: create-release
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RELEASE_BODY: ${{ steps.changelog.outputs.result }}
         with:
           script: |
+            const version = '${{ steps.get-version.outputs.result }}';
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner, repo: context.repo.repo,
-              tag_name: `v${{ steps.get-version.outputs.version }}`,
-              name: `DOAL v${{ steps.get-version.outputs.version }}`,
+              tag_name: 'v' + version,
+              name: 'DOAL v' + version,
               body: process.env.RELEASE_BODY || '',
-              draft: true, prerelease: false, target_commitish: 'main'
+              draft: true, prerelease: false, target_commitish: context.sha
             });
             return data.id;
 
   build:
     needs: create-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            name: doal-linux-amd64
-          - os: ubuntu-latest
-            goos: linux
-            goarch: arm64
-            name: doal-linux-arm64
-          - os: macos-latest
-            goos: darwin
-            goarch: amd64
-            name: doal-macos-amd64
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            name: doal-macos-arm64
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            name: doal-windows-amd64
-            ext: .exe
-          - os: windows-latest
-            goos: windows
-            goarch: arm64
-            name: doal-windows-arm64
-            ext: .exe
-
+          - { os: ubuntu-latest, goos: linux, goarch: amd64, name: doal-linux-amd64 }
+          - { os: ubuntu-latest, goos: linux, goarch: arm64, name: doal-linux-arm64 }
+          - { os: macos-latest, goos: darwin, goarch: amd64, name: doal-macos-amd64 }
+          - { os: macos-latest, goos: darwin, goarch: arm64, name: doal-macos-arm64 }
+          - { os: windows-latest, goos: windows, goarch: amd64, name: doal-windows-amd64, ext: .exe }
+          - { os: windows-latest, goos: windows, goarch: arm64, name: doal-windows-arm64, ext: .exe }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: '1.23'
-
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -ldflags="-s -w" -o ${{ matrix.name }}${{ matrix.ext }} .
-
-      - name: Upload asset
-        uses: actions/github-script@v7
+        run: go build -trimpath -ldflags="-s -w" -o ${{ matrix.name }}${{ matrix.ext }} .
+      - name: Upload binary and checksum
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const crypto = require('crypto');
             const fs = require('fs');
             const name = '${{ matrix.name }}${{ matrix.ext }}';
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner, repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.release-id }},
-              name: name, data: fs.readFileSync(name)
-            });
+            const data = fs.readFileSync(name);
+            const checksumName = name + '.sha256';
+            fs.writeFileSync(checksumName, crypto.createHash('sha256').update(data).digest('hex') + '  ' + name + '\n');
+            for (const asset of [name, checksumName]) {
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner, repo: context.repo.repo,
+                release_id: ${{ needs.create-release.outputs.release-id }},
+                name: asset, data: fs.readFileSync(asset)
+              });
+            }
 
   publish:
     needs: [create-release, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Publish
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.updateRelease({

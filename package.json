@@ -1,0 +1,17 @@
+{
+  "name": "doal-web-assets",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build:web": "npm run build:css && node scripts/sync-web-assets.mjs",
+    "build:css": "tailwindcss -i web/assets/input.css -o web/static/app.css --minify",
+    "check:web": "npm run build:web && git diff --exit-code -- web/static/app.css web/static/lucide.min.js"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "lucide": "1.39.0",
+    "tailwindcss": "4.3.3"
+  }
+}
