@@ -246,6 +246,7 @@
               <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Vitesse adaptée au swarm</p><p class="text-xs text-muted-foreground mt-0.5">Augmente la vitesse (+20%) quand la demande leecher est élevée</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgSwarmAware"><span class="toggle-slider"></span></label></div>
               <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Anneau de contreparties du lab</p><p class="text-xs text-muted-foreground mt-0.5">Apparie les octets sur le tracker configure (2 a 8 pairs)</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgLabSybilRing"><span class="toggle-slider"></span></label></div>
               <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Proxy de pieces a la demande</p><p class="text-xs text-muted-foreground mt-0.5">Recupere et verifie une piece reelle avant de la servir en mode FAKE_DATA</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgPieceProxy"><span class="toggle-slider"></span></label></div>
+              <div class="flex items-center justify-between rounded-lg border border-border px-4 py-3 hover:bg-accent/50 transition"><div class="flex-1"><p class="text-sm font-medium">Autoriser le reseau prive</p><p class="text-xs text-muted-foreground mt-0.5">Reserve aux trackers et pairs d'un laboratoire local de confiance</p></div><label class="toggle ml-4"><input type="checkbox" id="cfgPrivateNetworks"><span class="toggle-slider"></span></label></div>
             </div>
           </div>
 
@@ -364,6 +365,7 @@
   // ===== State =====
   let stomp=null;
   let state={connected:false,seeding:false,client:null,clientFiles:[],config:null,torrents:{},announcers:{},speeds:{},torrentUploaded:{},totalUploaded:0,history:[],pausedTorrents:{},trackerStats:{}};
+  let configSavePending=false;
   let uploadAccumulator=null;
   let reconnectTimer=null;
   let authToken='';
@@ -382,7 +384,7 @@
     let ts=0; Object.values(state.speeds).forEach(s=>ts+=s);
     const j=1+(Math.random()-0.5)*0.04, dt=ts*j;
     document.getElementById('statTotalSpeed').innerHTML=(dt/1024).toFixed(1)+'<span class="stat-unit">kB/s</span>';
-    const ac=Object.keys(state.announcers).length;
+    const ac=Object.keys(state.announcers).filter(hash=>!state.pausedTorrents[hash]).length;
     if(ac>0)document.getElementById('statSpeedDetail').textContent=(dt/1024/ac).toFixed(0)+' kB/s en moyenne par torrent';
     document.querySelectorAll('[data-speed-hash]').forEach(el=>{
       const sp=state.speeds[el.dataset.speedHash]||0;
@@ -453,7 +455,8 @@
     if(!msg||!msg.type)return; const type=msg.type,p=msg.payload;
     switch(type){
       case 'CONFIG_HAS_BEEN_LOADED': case 'CONFIG_IS_IN_DIRTY_STATE':
-        state.config=p.config||p; updateConfigUI(); break;
+        state.config=p.config||p; updateConfigUI();
+        if(configSavePending){configSavePending=false;showToast('Configuration sauvegardée','success');} break;
       case 'LIST_OF_CLIENT_FILES': state.clientFiles=p.clients||[]; updateClientSelect(); break;
       case 'GLOBAL_SEED_STARTED': state.seeding=true; state.client=p.client; startUploadAccumulator(); updateConnectionUI();
         // Pre-fill ONLY on fresh start (not on init replay where announcers already exist)
@@ -466,7 +469,7 @@
         updateDashboard();
         addHistoryEntry('success','Seeding démarré','Client: '+p.client);
         notifyDesktop('DOAL', 'Seeding démarré'); break;
-      case 'GLOBAL_SEED_STOPPED': state.seeding=false; state.client=null; state.announcers={}; state.speeds={};
+      case 'GLOBAL_SEED_STOPPED': state.seeding=false; state.client=null; state.announcers={}; state.speeds={}; state.pausedTorrents={};
         stopUploadAccumulator(); updateConnectionUI(); updateDashboard();
         addHistoryEntry('info','Seeding arrêté','Tous les torrents stoppés');
         notifyDesktop('DOAL', 'Seeding arrêté'); break;
@@ -474,7 +477,7 @@
         const addKey=hashToString(p.infoHash);
         state.torrents[addKey]={name:p.name,size:p.size,displayHash:addKey,rawHash:hashToRaw(p.infoHash)};
         updateTorrentFileTable(); break;
-      case 'TORRENT_FILE_DELETED': { const deletedHash=hashToString(p.infoHash); delete state.torrents[deletedHash]; delete state.announcers[deletedHash]; delete state.speeds[deletedHash]; updateTorrentFileTable(); updateDashboard(); break; }
+      case 'TORRENT_FILE_DELETED': { const deletedHash=hashToString(p.infoHash); delete state.torrents[deletedHash]; delete state.announcers[deletedHash]; delete state.speeds[deletedHash]; delete state.pausedTorrents[deletedHash]; updateTorrentFileTable(); updateDashboard(); break; }
       case 'FAILED_TO_ADD_TORRENT_FILE': showToast('Erreur: '+p.error,'error'); notifyDesktop('DOAL', 'Erreur ajout torrent'); break;
       case 'SUCCESSFULLY_ANNOUNCE':
         const ah=hashToString(p.infoHash); state.announcers[ah]=p; updateDashboard();
@@ -488,11 +491,11 @@
         state.speeds={}; state.torrentUploaded={}; (p.speeds||[]).forEach(s=>{state.speeds[hashToString(s.infoHash)]=s.bytesPerSecond; state.torrentUploaded[hashToString(s.infoHash)]=s.uploaded||0;});
         if(p.totalUploaded!=null&&p.totalUploaded>0)state.totalUploaded=p.totalUploaded;
         refreshLiveDisplay(); break;
-      case 'INVALID_CONFIG': showToast('Config invalide: '+p.error,'error'); break;
-      case 'TORRENT_PAUSED': { const ph=hashToString(p.infoHash); state.pausedTorrents[ph]=true; updateTorrentSeedTable(); break; }
-      case 'TORRENT_RESUMED': { const rh=hashToString(p.infoHash); delete state.pausedTorrents[rh]; updateTorrentSeedTable(); break; }
+      case 'INVALID_CONFIG': configSavePending=false; showToast('Config invalide: '+(typeof p==='string'?p:(p?.error||'erreur inconnue')),'error'); break;
+      case 'TORRENT_PAUSED': { const ph=hashToString(p.infoHash); state.pausedTorrents[ph]=true; delete state.speeds[ph]; if(!state.announcers[ph]&&state.torrents[ph]){const t=state.torrents[ph];state.announcers[ph]={infoHash:ph,torrentName:t.name,torrentSize:t.size,lastKnownSeeders:'-',lastKnownLeechers:'-',lastKnownInterval:1800,lastAnnouncedAt:null,requestEvent:'PAUSED'};} updateDashboard(); break; }
+      case 'TORRENT_RESUMED': { const rh=hashToString(p.infoHash); delete state.pausedTorrents[rh]; updateDashboard(); break; }
       case 'TORRENT_SLOT_ACTIVATED': { const sh=hashToString(p.infoHash); state.announcers[sh]={infoHash:sh,torrentName:p.name,torrentSize:p.size,lastKnownSeeders:'-',lastKnownLeechers:'-',lastKnownInterval:1800,lastAnnouncedAt:null,requestEvent:'STARTED'}; updateDashboard(); break; }
-      case 'TORRENT_SLOT_DEACTIVATED': { const sh=hashToString(p.infoHash); delete state.announcers[sh]; delete state.speeds[sh]; delete state.pausedTorrents[sh]; updateDashboard(); break; }
+      case 'TORRENT_SLOT_DEACTIVATED': { const sh=hashToString(p.infoHash); delete state.announcers[sh]; delete state.speeds[sh]; updateDashboard(); break; }
       case 'TRACKER_STATS':
         state.trackerStats={};
         (p.trackers||[]).forEach(t=>{state.trackerStats[t.domain]={totalUploaded:t.totalUploaded,torrentCount:t.torrentCount,paused:t.paused};});
@@ -509,6 +512,7 @@
   function numericValue(id,fallback){const value=Number(document.getElementById(id).value);return Number.isFinite(value)?value:fallback;}
   function saveConfig(){
     if(!stomp||!stomp.connected){showToast('Non connecté','error');return;}
+    configSavePending=true;
     stomp.send('/doal/config/save',JSON.stringify({
       minUploadRate:numericValue('cfgMinUpload',0),
       maxUploadRate:numericValue('cfgMaxUpload',0),
@@ -535,9 +539,9 @@
       dhtBootstrapNodes:document.getElementById('cfgDHTBootstrap').value.split(',').map(v=>v.trim()).filter(Boolean),
       enableLabSybilRing:document.getElementById('cfgLabSybilRing').checked,
       labSybilPeers:numericValue('cfgLabSybilPeers',0),
-      enablePieceProxy:document.getElementById('cfgPieceProxy').checked
+      enablePieceProxy:document.getElementById('cfgPieceProxy').checked,
+      allowPrivateNetworks:document.getElementById('cfgPrivateNetworks').checked
     }));
-    showToast('Configuration sauvegardée','success');
   }
   function deleteTorrent(hash){if(stomp&&stomp.connected)stomp.send('/doal/torrents/delete',JSON.stringify(hash));}
   function pauseTorrent(hash){if(stomp&&stomp.connected)stomp.send('/doal/torrents/pause',JSON.stringify({infoHash:hash}));}
@@ -581,7 +585,7 @@
   function updateDashboard(){
     let ts=0;Object.values(state.speeds).forEach(s=>ts+=s);
     document.getElementById('statTotalSpeed').innerHTML=(ts/1024).toFixed(1)+'<span class="stat-unit">kB/s</span>';
-    const ac=Object.keys(state.announcers).length;
+    const ac=Object.keys(state.announcers).filter(hash=>!state.pausedTorrents[hash]).length;
     document.getElementById('statActiveTorrents').textContent=ac;
     document.getElementById('statTorrentDetail').textContent=Object.keys(state.torrents).length+' torrents chargés';
     if(ac>0)document.getElementById('statSpeedDetail').textContent=(ts/1024/ac).toFixed(0)+' kB/s en moyenne';
@@ -697,6 +701,7 @@
     document.getElementById('cfgLabSybilRing').checked=c.enableLabSybilRing||false;
     document.getElementById('cfgLabSybilPeers').value=c.labSybilPeers||4;
     document.getElementById('cfgPieceProxy').checked=c.enablePieceProxy||false;
+    document.getElementById('cfgPrivateNetworks').checked=c.allowPrivateNetworks||false;
     if(c.client){const sel=document.getElementById('cfgClient');if(sel.querySelector('option[value="'+c.client+'"]'))sel.value=c.client;}
   }
   function updateClientSelect(){

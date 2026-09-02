@@ -22,6 +22,7 @@
   "maxAnnounceFailures": 5,
   "announceIp": "",
   "enablePieceProxy": false,
+  "allowPrivateNetworks": false,
   "dhtBootstrapNodes": [],
   "enableLabSybilRing": false,
   "labSybilPeers": 0

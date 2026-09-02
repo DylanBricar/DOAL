@@ -50,3 +50,13 @@ func TestResolveDialTargetsRejectsPrivateNetworksByDefault(t *testing.T) {
 		t.Fatalf("opt-in targets = %q, want original loopback address", targets)
 	}
 }
+
+func TestPublicNetworkPolicyRejectsSpecialUseRanges(t *testing.T) {
+	t.Parallel()
+
+	for _, address := range []string{"100.64.0.1:80", "198.18.0.1:80", "203.0.113.9:80", "[2001:db8::1]:443"} {
+		if _, err := resolveDialTargets(context.Background(), net.DefaultResolver, address, false); err == nil {
+			t.Errorf("special-use address %s was accepted", address)
+		}
+	}
+}

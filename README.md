@@ -102,15 +102,21 @@ All settings are configurable via the web UI or directly in `config.json`.
 | `proxyUrl` | string | `""` | Proxy URL (e.g. `socks5://user:pass@host:1080`) |
 | `announceIp` | string | `""` | Override IP reported to trackers (empty = auto-detect) |
 | `enablePieceProxy` | bool | `false` | On-demand piece proxy: leech a requested piece live from a real seed, SHA-1 verify it, then serve it. Only meaningful in `FAKE_DATA` mode. See below. |
+| `allowPrivateNetworks` | bool | `false` | Explicitly allow torrent-supplied trackers and peers to reach private, loopback or special-use networks; intended only for trusted local labs |
 | `dhtBootstrapNodes` | string[] | `[]` | Explicit DHT entry points; any valid DNS hostname or IP address with a port is accepted |
 | `enableLabSybilRing` | bool | `false` | Enable matched counterparty accounting inside the configured tracker lab |
 | `labSybilPeers` | int | `0` | Counterparties in the lab ring; must be 2-8 when enabled |
 
-Tracker announces accept any domain or IP address over HTTP(S). Malformed URLs,
-embedded credentials and unsupported schemes remain rejected; redirects are
-validated by the same rules. DHT traffic accepts any explicitly configured
-valid `host:port` endpoint. The lab ring is disabled by default and cannot
-exceed eight counterparties.
+Tracker announces accept public domains and IP addresses over HTTP(S).
+Malformed URLs, embedded credentials, HTTPS-to-HTTP redirects, and private or
+special-use destinations are rejected by default; direct-connection DNS
+results are pinned to prevent rebinding. Set `allowPrivateNetworks` only for a
+trusted isolated lab. An explicitly configured proxy endpoint may itself be
+local; torrent-supplied tracker destinations are still checked before use.
+DHT traffic accepts any explicitly configured valid
+`host:port` endpoint. The lab ring is disabled by default and cannot exceed
+eight counterparties. Stop seeding before changing client or network settings;
+bandwidth and slot-count changes remain live.
 
 ### Schedule
 
@@ -163,13 +169,16 @@ miss DOAL instead:
 3. checks the piece against the torrent's own SHA-1 hash,
 4. stores it in a bounded cache and serves only the verified bytes.
 
-The proxy is disabled by default and restricted to the configured lab scope. It
-cannot provide a piece absent from every upstream source; that request is
-rejected. Its memory cache is globally bounded and cleared during shutdown.
+The proxy is disabled by default. Tracker-provided private and special-use peer
+addresses are rejected unless `allowPrivateNetworks` is explicitly enabled for
+a trusted isolated lab. It cannot provide a piece absent from every upstream
+source; that request is rejected. Its memory cache is globally bounded and
+cleared during shutdown.
 
 ## Web UI
 
-Modern dark-themed dashboard built with Tailwind CSS, Chart.js, and Lucide icons.
+Modern dark-themed dashboard built with Tailwind CSS, a native Canvas chart,
+and locally bundled Lucide icons.
 
 - **Real-time speed graph** with organic variations
 - **Per-torrent stats** (speed, upload, seeders, leechers)

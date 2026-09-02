@@ -262,6 +262,7 @@ type configSaveRequest struct {
 	EnableLabSybilRing          bool     `json:"enableLabSybilRing"`
 	LabSybilPeers               int      `json:"labSybilPeers"`
 	EnablePieceProxy            bool     `json:"enablePieceProxy"`
+	AllowPrivateNetworks        bool     `json:"allowPrivateNetworks"`
 }
 
 func (h *Handlers) handleConfigSave(data []byte) {
@@ -270,7 +271,7 @@ func (h *Handlers) handleConfigSave(data []byte) {
 		fmt.Printf("handlers: parsing config save request: %v\n", err)
 		h.server.SendToAll(DestConfig, StompMessage{
 			Type:    MsgInvalidConfig,
-			Payload: err.Error(),
+			Payload: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -308,19 +309,24 @@ func (h *Handlers) handleConfigSave(data []byte) {
 		EnableLabSybilRing:          req.EnableLabSybilRing,
 		LabSybilPeers:               req.LabSybilPeers,
 		EnablePieceProxy:            req.EnablePieceProxy,
+		AllowPrivateNetworks:        req.AllowPrivateNetworks,
 	}
 
 	if err := cfg.Validate(); err != nil {
 		fmt.Printf("handlers: invalid config: %v\n", err)
 		h.server.SendToAll(DestConfig, StompMessage{
 			Type:    MsgInvalidConfig,
-			Payload: err.Error(),
+			Payload: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
 
 	if err := h.engine.SaveConfig(cfg); err != nil {
 		fmt.Printf("handlers: saving config: %v\n", err)
+		h.server.SendToAll(DestConfig, StompMessage{
+			Type:    MsgInvalidConfig,
+			Payload: map[string]interface{}{"error": err.Error()},
+		})
 		return
 	}
 

@@ -76,7 +76,11 @@ func NewScheduler(
 	onTooManyFails func(infoHashHex string),
 	getUploaded func(infoHashHex string) int64,
 ) *Scheduler {
-	transport := NewUTLSTransport(ClientHelloForEmulatedClient(strings.ToLower(client.UserAgent)))
+	allowPrivateNetworks := cfg != nil && cfg.AllowPrivateNetworks
+	// A proxy endpoint is explicit trusted configuration, not torrent-supplied
+	// input. Tracker destinations remain independently validated below.
+	allowPrivateDialTarget := allowPrivateNetworks || proxyURL != ""
+	transport := NewUTLSTransportWithNetworkPolicy(ClientHelloForEmulatedClient(strings.ToLower(client.UserAgent)), allowPrivateDialTarget)
 	if proxyURL != "" {
 		if parsed, err := url.Parse(proxyURL); err == nil {
 			transport.Proxy = http.ProxyURL(parsed)
@@ -92,9 +96,15 @@ func NewScheduler(
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,
 			Transport: transport,
-			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if !IsSupportedTrackerURL(req.URL.String()) {
 					return http.ErrUseLastResponse
+				}
+				if len(via) > 0 && via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+					return http.ErrUseLastResponse
+				}
+				if err := validateTrackerNetworkTarget(req.Context(), req.URL.String(), allowPrivateNetworks); err != nil {
+					return err
 				}
 				return nil
 			},
@@ -119,7 +129,8 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) bool {
 	}
 
 	torrentClient := s.client.clone()
-	a := newAnnouncer(t, torrentClient, s.httpClient)
+	allowPrivateNetworks := s.config != nil && s.config.AllowPrivateNetworks
+	a := newAnnouncerWithNetworkPolicy(t, torrentClient, s.httpClient, allowPrivateNetworks)
 	now := time.Now()
 	seed := schedulerSeed(t.InfoHashHex)
 	rng := rand.New(rand.NewSource(seed))
@@ -141,7 +152,7 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) bool {
 		if s.getUploaded != nil {
 			baselineUploaded = s.getUploaded(t.InfoHashHex)
 		}
-		ring, err := newMatchedRing(
+		ring, err := newMatchedRingWithNetworkPolicy(
 			t,
 			torrentClient,
 			s.httpClient,
@@ -149,6 +160,7 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) bool {
 			s.GetPort(),
 			s.config.AnnounceIP,
 			baselineUploaded,
+			allowPrivateNetworks,
 		)
 		if err != nil {
 			if s.onFailure != nil {
@@ -418,6 +430,13 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 
 	// Network I/O — no locks held.
 	resp, err := entry.announcer.AnnounceContext(ctx, params)
+	entry.mu.Lock()
+	if entry.removed || ctx.Err() != nil {
+		entry.finishAnnounceLocked()
+		entry.mu.Unlock()
+		return
+	}
+	entry.mu.Unlock()
 	if err != nil {
 		if s.onFailure != nil {
 			s.onFailure(infoHashHex, err)

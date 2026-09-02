@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -107,6 +108,7 @@ type Engine struct {
 	slotsMu      sync.Mutex
 	configSaveMu sync.Mutex
 	failedSlots  map[string]bool // protected by slotsMu; retried on explicit resume or restart
+	pausedSlots  map[string]bool // protected by slotsMu; resumed only by explicit user action or restart
 	dispatcher   *bandwidth.Dispatcher
 	scheduler    *announce.Scheduler
 	peerWire     *peerwire.Server
@@ -126,6 +128,8 @@ func (e *Engine) Start() error {
 	defer e.lifecycleMu.Unlock()
 	e.slotsMu.Lock()
 	defer e.slotsMu.Unlock()
+	e.configSaveMu.Lock()
+	defer e.configSaveMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -143,10 +147,14 @@ func (e *Engine) Start() error {
 			for i := 0; i < 100; i++ {
 				pick := clients[rand.Intn(len(clients))]
 				if pick != current {
-					cfg.Client = pick
-					e.cfg = cfg
+					rotated := cloneConfig(cfg)
+					rotated.Client = pick
 					confPath := filepath.Join(e.confDir, "config.json")
-					cfg.SaveTo(confPath)
+					if err := rotated.SaveTo(confPath); err != nil {
+						return fmt.Errorf("engine: saving rotated client config: %w", err)
+					}
+					cfg = rotated
+					e.cfg = rotated
 					break
 				}
 			}
@@ -282,7 +290,7 @@ func (e *Engine) Start() error {
 	// Start PeerWire server on the same port advertised to trackers.
 	e.peerWire = peerwire.NewServer(listenPort, cfg.PeerResponseMode, cc.UserAgent)
 	if cfg.EnablePieceProxy {
-		e.peerWire.EnablePieceProxy()
+		e.peerWire.EnablePieceProxyWithNetworkPolicy(cfg.AllowPrivateNetworks)
 		slog.Info("piece proxy enabled (on-demand leech + SHA-1 verify)")
 	}
 	// Start the configured DHT first so PeerWire advertises DHT only when the UDP
@@ -296,6 +304,7 @@ func (e *Engine) Start() error {
 	}
 
 	e.failedSlots = make(map[string]bool)
+	e.pausedSlots = make(map[string]bool)
 	torrents := sortedTorrents(e.watcher.GetTorrents())
 	for i, t := range torrents {
 		if i >= cfg.SimultaneousSeed {
@@ -388,20 +397,47 @@ func (e *Engine) PauseTorrent(infoHashHex string) {
 func (e *Engine) ResumeTorrent(infoHashHex string) {
 	e.slotsMu.Lock()
 	defer e.slotsMu.Unlock()
-	if e.failedSlots[infoHashHex] {
-		delete(e.failedSlots, infoHashHex)
-		e.rebalanceActiveSlotsLocked()
-		return
-	}
+	wasQuarantined := e.failedSlots[infoHashHex] || e.pausedSlots[infoHashHex]
+	delete(e.failedSlots, infoHashHex)
+	delete(e.pausedSlots, infoHashHex)
 	e.mu.RLock()
 	seeding := e.seeding
 	sched, disp, pw, dhtNode, cc := e.scheduler, e.dispatcher, e.peerWire, e.dhtNode, e.clientConfig
+	target := 0
+	if e.cfg != nil {
+		target = e.cfg.SimultaneousSeed
+	}
 	e.mu.RUnlock()
-	if !seeding || sched == nil || !sched.HasTorrent(infoHashHex) {
+	if !seeding || sched == nil {
 		return
 	}
 	t := e.torrentByHash(infoHashHex)
 	if t == nil {
+		return
+	}
+	if !sched.HasTorrent(infoHashHex) {
+		if !wasQuarantined || cc == nil {
+			return
+		}
+		if eviction := selectExplicitResumeEviction(sched.TorrentHashes(), target); eviction != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			e.deactivateTorrent(ctx, eviction, sched, disp, pw, dhtNode)
+			cancel()
+			if e.handlers != nil {
+				e.handlers.BroadcastTorrentSlotDeactivated(eviction)
+			}
+		}
+		if e.activateTorrent(t, sched, disp, pw, dhtNode, cc) {
+			if e.handlers != nil {
+				e.handlers.BroadcastTorrentSlotActivated(t)
+			}
+			return
+		}
+		if e.pausedSlots == nil {
+			e.pausedSlots = make(map[string]bool)
+		}
+		e.pausedSlots[infoHashHex] = true
+		e.rebalanceActiveSlotsLocked()
 		return
 	}
 	disp.ResumeTorrent(infoHashHex)
@@ -438,9 +474,14 @@ func (e *Engine) ResumeTracker(domain string) {
 }
 
 func (e *Engine) GetPausedTorrents() map[string]bool {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	result := make(map[string]bool, len(e.pausedSlots))
+	for hash := range e.pausedSlots {
+		result[hash] = true
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	result := make(map[string]bool)
 	if e.scheduler == nil {
 		return result
 	}
@@ -491,6 +532,7 @@ func (e *Engine) Stop() {
 	}
 	e.seeding = false
 	e.failedSlots = nil
+	e.pausedSlots = nil
 	sched := e.scheduler
 	cancelSeed := e.cancelSeed
 	pw := e.peerWire
@@ -580,7 +622,7 @@ func (e *Engine) rotateTorrents() {
 	for _, t := range allTorrents {
 		if sched.HasTorrent(t.InfoHashHex) && !sched.IsPaused(t.InfoHashHex) {
 			active = append(active, t.InfoHashHex)
-		} else if !sched.HasTorrent(t.InfoHashHex) && !e.failedSlots[t.InfoHashHex] {
+		} else if !sched.HasTorrent(t.InfoHashHex) && !e.failedSlots[t.InfoHashHex] && !e.pausedSlots[t.InfoHashHex] {
 			inactive = append(inactive, t)
 		}
 	}
@@ -612,6 +654,12 @@ func (e *Engine) SaveConfig(cfg *config.Config) error {
 
 	e.configSaveMu.Lock()
 	defer e.configSaveMu.Unlock()
+	e.mu.RLock()
+	if e.seeding && restartBoundConfigChanged(e.cfg, stored) {
+		e.mu.RUnlock()
+		return errors.New("engine: stop seeding before changing client or network settings")
+	}
+	e.mu.RUnlock()
 	confPath := filepath.Join(e.confDir, "config.json")
 	if err := stored.SaveTo(confPath); err != nil {
 		return fmt.Errorf("engine: saving config: %w", err)
@@ -664,6 +712,36 @@ func cloneConfig(cfg *config.Config) *config.Config {
 	clone := *cfg
 	clone.DHTBootstrapNodes = append([]string(nil), cfg.DHTBootstrapNodes...)
 	return &clone
+}
+
+func selectExplicitResumeEviction(active []string, target int) string {
+	if target < 1 || len(active) < target {
+		return ""
+	}
+	candidates := append([]string(nil), active...)
+	sort.Strings(candidates)
+	return candidates[len(candidates)-1]
+}
+
+func restartBoundConfigChanged(current, next *config.Config) bool {
+	if current == nil || next == nil {
+		return current != next
+	}
+	return current.Client != next.Client ||
+		current.AnnounceJitterPercent != next.AnnounceJitterPercent ||
+		current.PeerResponseMode != next.PeerResponseMode ||
+		current.SimulateDownload != next.SimulateDownload ||
+		current.RotateClientOnRestart != next.RotateClientOnRestart ||
+		current.ProxyEnabled != next.ProxyEnabled ||
+		current.ProxyType != next.ProxyType ||
+		current.ProxyURL != next.ProxyURL ||
+		current.AnnounceIP != next.AnnounceIP ||
+		current.MaxAnnounceFailures != next.MaxAnnounceFailures ||
+		!slices.Equal(current.DHTBootstrapNodes, next.DHTBootstrapNodes) ||
+		current.EnableLabSybilRing != next.EnableLabSybilRing ||
+		current.LabSybilPeers != next.LabSybilPeers ||
+		current.EnablePieceProxy != next.EnablePieceProxy ||
+		current.AllowPrivateNetworks != next.AllowPrivateNetworks
 }
 
 func sortedTorrents(torrents []*torrent.Torrent) []*torrent.Torrent {
@@ -767,16 +845,14 @@ func (e *Engine) pauseTorrentRuntime(infoHashHex string) {
 	if !seeding || sched == nil || !sched.HasTorrent(infoHashHex) {
 		return
 	}
-	if disp != nil {
-		disp.PauseTorrent(infoHashHex)
+	if e.pausedSlots == nil {
+		e.pausedSlots = make(map[string]bool)
 	}
-	sched.PauseTorrent(infoHashHex)
-	if pw != nil {
-		pw.UnregisterTorrent(infoHashHex)
-	}
-	if dhtNode != nil {
-		dhtNode.RemoveTorrent(infoHashHex)
-	}
+	e.pausedSlots[infoHashHex] = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	e.deactivateTorrent(ctx, infoHashHex, sched, disp, pw, dhtNode)
+	cancel()
+	e.rebalanceActiveSlotsLocked()
 }
 
 func (e *Engine) removeFailedTorrentRuntime(infoHashHex string) {
@@ -837,7 +913,7 @@ func (e *Engine) rebalanceActiveSlotsLocked() {
 		if len(active) >= target {
 			break
 		}
-		if _, exists := byHash[t.InfoHashHex]; !exists || sched.HasTorrent(t.InfoHashHex) || e.failedSlots[t.InfoHashHex] {
+		if _, exists := byHash[t.InfoHashHex]; !exists || sched.HasTorrent(t.InfoHashHex) || e.failedSlots[t.InfoHashHex] || e.pausedSlots[t.InfoHashHex] {
 			continue
 		}
 		if e.activateTorrent(t, sched, disp, pw, dhtNode, cc) {
@@ -1013,6 +1089,7 @@ func main() {
 				return
 			}
 			delete(engine.failedSlots, t.InfoHashHex)
+			delete(engine.pausedSlots, t.InfoHashHex)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			engine.deactivateTorrent(ctx, t.InfoHashHex, sched, disp, pw, dhtNode)
 			cancel()

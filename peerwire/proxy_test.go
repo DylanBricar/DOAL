@@ -35,6 +35,11 @@ func TestPieceProxyPeerPolicyRejectsPrivateTargetsByDefault(t *testing.T) {
 	if !peerAllowedByNetworkPolicy(peer, true) {
 		t.Fatal("explicit private-network opt-in did not accept a valid loopback peer")
 	}
+	for _, address := range []string{"100.64.0.1", "198.18.0.1", "203.0.113.1"} {
+		if peerAllowedByNetworkPolicy(Peer{IP: address, Port: 6881}, false) {
+			t.Errorf("special-use peer %s was accepted", address)
+		}
+	}
 }
 
 // startFakeSeed stands up a TCP peer that speaks enough of the peer-wire

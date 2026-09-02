@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
+
+	"doal/networkpolicy"
 )
 
 // The optional piece provider is restricted to the isolated tracker lab. It
@@ -83,8 +86,9 @@ type Peer struct {
 
 // PieceProxy fetches and SHA-1 verifies pieces from real swarm seeds on demand.
 type PieceProxy struct {
-	mu       sync.RWMutex
-	torrents map[string]*proxyTorrent // infoHashHex -> state
+	mu                   sync.RWMutex
+	torrents             map[string]*proxyTorrent // infoHashHex -> state
+	allowPrivateNetworks bool
 
 	cacheMu      sync.Mutex
 	cacheLimit   int64
@@ -102,19 +106,30 @@ func NewPieceProxy() *PieceProxy {
 	return newPieceProxyWithCacheLimit(defaultProxyCacheLimit)
 }
 
+// NewPieceProxyWithNetworkPolicy creates a proxy that rejects private and
+// special-use tracker peers unless explicitly enabled for an isolated lab.
+func NewPieceProxyWithNetworkPolicy(allowPrivateNetworks bool) *PieceProxy {
+	return newPieceProxyWithCacheLimitAndNetworkPolicy(defaultProxyCacheLimit, allowPrivateNetworks)
+}
+
 func newPieceProxyWithCacheLimit(limit int64) *PieceProxy {
+	return newPieceProxyWithCacheLimitAndNetworkPolicy(limit, true)
+}
+
+func newPieceProxyWithCacheLimitAndNetworkPolicy(limit int64, allowPrivateNetworks bool) *PieceProxy {
 	if limit < 0 {
 		limit = 0
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PieceProxy{
-		torrents:     make(map[string]*proxyTorrent),
-		cacheLimit:   limit,
-		cacheLRU:     list.New(),
-		cacheEntries: make(map[proxyCacheKey]*list.Element),
-		fetchSlots:   make(chan struct{}, maxProxyConcurrentFetches),
-		ctx:          ctx,
-		cancel:       cancel,
+		torrents:             make(map[string]*proxyTorrent),
+		allowPrivateNetworks: allowPrivateNetworks,
+		cacheLimit:           limit,
+		cacheLRU:             list.New(),
+		cacheEntries:         make(map[proxyCacheKey]*list.Element),
+		fetchSlots:           make(chan struct{}, maxProxyConcurrentFetches),
+		ctx:                  ctx,
+		cancel:               cancel,
 	}
 }
 
@@ -144,12 +159,33 @@ func (p *PieceProxy) SetPeers(infoHashHex string, peers []Peer) {
 	if pt == nil {
 		return
 	}
-	if len(peers) > maxProxyPeers {
-		peers = peers[:maxProxyPeers]
+	filtered := make([]Peer, 0, min(len(peers), maxProxyPeers))
+	for _, peer := range peers {
+		if peerAllowedByNetworkPolicy(peer, p.allowPrivateNetworks) {
+			filtered = append(filtered, peer)
+			if len(filtered) == maxProxyPeers {
+				break
+			}
+		}
 	}
 	pt.stateMu.Lock()
-	pt.peers = append([]Peer(nil), peers...)
+	pt.peers = filtered
 	pt.stateMu.Unlock()
+}
+
+func peerAllowedByNetworkPolicy(peer Peer, allowPrivateNetworks bool) bool {
+	if peer.Port < 1 || peer.Port > 65535 {
+		return false
+	}
+	address, err := netip.ParseAddr(peer.IP)
+	if err != nil {
+		return false
+	}
+	address = address.Unmap()
+	if allowPrivateNetworks {
+		return address.IsValid() && !address.IsUnspecified() && !address.IsMulticast()
+	}
+	return networkpolicy.IsPublicAddress(address)
 }
 
 // Unregister drops all proxy state for a torrent.

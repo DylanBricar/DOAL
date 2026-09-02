@@ -46,9 +46,13 @@ type Server struct {
 // NewServer constructs a Server. The onMessage callback is invoked for every
 // STOMP SEND frame and SUBSCRIBE frame received.
 func NewServer(port int, pathPrefix, secretToken string, onMessage func(string, string, []byte)) *Server {
+	pathPrefix = strings.Trim(pathPrefix, "/")
+	if pathPrefix == "" {
+		pathPrefix = "doal"
+	}
 	s := &Server{
 		port:        port,
-		pathPrefix:  strings.Trim(pathPrefix, "/"),
+		pathPrefix:  pathPrefix,
 		secretToken: secretToken,
 		clients:     make(map[*Client]bool),
 		onMessage:   onMessage,

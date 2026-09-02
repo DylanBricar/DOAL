@@ -113,8 +113,14 @@ func (s *Server) RegisterDataFile(infoHashHex string, filePath string, pieceLeng
 // EnablePieceProxy activates on-demand piece leeching so cache misses are served
 // with verified data fetched from real seeds. Call before RegisterTorrent.
 func (s *Server) EnablePieceProxy() {
+	s.EnablePieceProxyWithNetworkPolicy(true)
+}
+
+// EnablePieceProxyWithNetworkPolicy applies the outbound peer-address policy
+// before any tracker-provided seed can be dialed.
+func (s *Server) EnablePieceProxyWithNetworkPolicy(allowPrivateNetworks bool) {
 	if s.pieceProxy == nil {
-		s.pieceProxy = NewPieceProxy()
+		s.pieceProxy = NewPieceProxyWithNetworkPolicy(allowPrivateNetworks)
 	}
 }
 

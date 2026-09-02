@@ -3,6 +3,7 @@ package announce
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -246,12 +247,13 @@ func TestRemovedEntrySuppressesLateSuccessCallback(t *testing.T) {
 // dummyConfig returns a minimal config for scheduler construction.
 func dummyConfig() *config.Config {
 	return &config.Config{
-		MinUploadRate:    100,
-		MaxUploadRate:    200,
-		SimultaneousSeed: 5,
-		Client:           "test.client",
-		SpeedModel:       config.SpeedModelUniform,
-		PeerResponseMode: config.PeerResponseModeNone,
+		MinUploadRate:        100,
+		MaxUploadRate:        200,
+		SimultaneousSeed:     5,
+		Client:               "test.client",
+		SpeedModel:           config.SpeedModelUniform,
+		PeerResponseMode:     config.PeerResponseModeNone,
+		AllowPrivateNetworks: true,
 	}
 }
 
@@ -517,5 +519,32 @@ func TestSchedulerMultipleTorrents(t *testing.T) {
 		if !s.HasTorrent(h) {
 			t.Errorf("HasTorrent(%q): want true", h)
 		}
+	}
+}
+
+func TestSchedulerAllowsExplicitLocalProxyWithoutOpeningPrivateTrackers(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	proxyURL := "http://" + listener.Addr().String()
+	cc := &ClientConfig{PeerID: "01234567890123456789", UserAgent: "TestClient/1.0"}
+	cfg := dummyConfig()
+	cfg.AllowPrivateNetworks = false
+	s := NewScheduler(6881, 0, cc, cfg, proxyURL, nil, nil, nil, nil)
+	transport, ok := s.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T", s.httpClient.Transport)
+	}
+	conn, err := transport.DialContext(context.Background(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("explicit local proxy endpoint was blocked: %v", err)
+	}
+	conn.Close()
+	if err := validateTrackerNetworkTarget(context.Background(), "http://127.0.0.1/announce", false); err == nil {
+		t.Fatal("private tracker target was opened by configuring a local proxy")
 	}
 }

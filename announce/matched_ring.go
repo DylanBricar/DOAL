@@ -23,14 +23,15 @@ type matchedRing struct {
 	mu   sync.Mutex
 	opMu sync.Mutex
 
-	torrent    *torrent.Torrent
-	baseClient *ClientConfig
-	httpClient *http.Client
-	actors     []*matchedActor
-	usedIDs    map[string]struct{}
-	port       int
-	announceIP string
-	cursor     int
+	torrent              *torrent.Torrent
+	baseClient           *ClientConfig
+	httpClient           *http.Client
+	actors               []*matchedActor
+	usedIDs              map[string]struct{}
+	port                 int
+	announceIP           string
+	allowPrivateNetworks bool
+	cursor               int
 
 	accountedUploaded int64
 	totalDownloaded   int64
@@ -54,6 +55,19 @@ func newMatchedRing(
 	announceIP string,
 	baselineUploaded int64,
 ) (*matchedRing, error) {
+	return newMatchedRingWithNetworkPolicy(t, baseClient, httpClient, peerCount, port, announceIP, baselineUploaded, true)
+}
+
+func newMatchedRingWithNetworkPolicy(
+	t *torrent.Torrent,
+	baseClient *ClientConfig,
+	httpClient *http.Client,
+	peerCount int,
+	port int,
+	announceIP string,
+	baselineUploaded int64,
+	allowPrivateNetworks bool,
+) (*matchedRing, error) {
 	if t == nil || t.Size <= 0 {
 		return nil, fmt.Errorf("matched ring requires a non-empty torrent")
 	}
@@ -65,7 +79,7 @@ func newMatchedRing(
 	}
 	for _, trackerURL := range t.AnnounceURLs {
 		if !IsSupportedTrackerURL(trackerURL) {
-			return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerURL)
+			return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerDisplayName(trackerURL))
 		}
 	}
 	if baselineUploaded < 0 {
@@ -73,13 +87,14 @@ func newMatchedRing(
 	}
 
 	ring := &matchedRing{
-		torrent:           t,
-		baseClient:        baseClient,
-		httpClient:        httpClient,
-		usedIDs:           make(map[string]struct{}),
-		port:              port,
-		announceIP:        announceIP,
-		accountedUploaded: baselineUploaded,
+		torrent:              t,
+		baseClient:           baseClient,
+		httpClient:           httpClient,
+		usedIDs:              make(map[string]struct{}),
+		port:                 port,
+		announceIP:           announceIP,
+		accountedUploaded:    baselineUploaded,
+		allowPrivateNetworks: allowPrivateNetworks,
 	}
 	for i := 0; i < peerCount; i++ {
 		actor, err := ring.freshActor()
@@ -103,7 +118,7 @@ func (r *matchedRing) freshActor() (*matchedActor, error) {
 		r.usedIDs[client.PeerID] = struct{}{}
 		r.generations++
 		return &matchedActor{
-			announcer:  newAnnouncer(r.torrent, client, r.httpClient),
+			announcer:  newAnnouncerWithNetworkPolicy(r.torrent, client, r.httpClient, r.allowPrivateNetworks),
 			generation: r.generations,
 		}, nil
 	}

@@ -17,15 +17,38 @@ var helloLibtorrentOpenSSL = utls.ClientHelloID{Client: "Libtorrent", Version: "
 // to match a specific client. clientHello determines which fingerprint to use.
 // Plain HTTP connections bypass uTLS and use the standard TCP dialer.
 func NewUTLSTransport(clientHello utls.ClientHelloID) *http.Transport {
+	return NewUTLSTransportWithNetworkPolicy(clientHello, true)
+}
+
+// NewUTLSTransportWithNetworkPolicy creates an emulated transport that pins
+// DNS results and rejects private or special-use destinations unless the user
+// explicitly opts into local-network torrent labs.
+func NewUTLSTransportWithNetworkPolicy(clientHello utls.ClientHelloID, allowPrivateNetworks bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		targets, err := resolveDialTargets(ctx, net.DefaultResolver, addr, allowPrivateNetworks)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, target := range targets {
+			conn, err := dialer.DialContext(ctx, network, target)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 	return &http.Transport{
+		DialContext: dial,
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, _, err := net.SplitHostPort(addr)
 			if err != nil {
 				host = addr
 			}
 
-			conn, err := dialer.DialContext(ctx, network, addr)
+			conn, err := dial(ctx, network, addr)
 			if err != nil {
 				return nil, err
 			}

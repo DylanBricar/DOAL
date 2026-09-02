@@ -2,8 +2,10 @@ package announce
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -443,5 +445,18 @@ func TestDecodeBencodeDictRejectsExcessiveNesting(t *testing.T) {
 	nested := "d3:key" + strings.Repeat("l", 129) + strings.Repeat("e", 129) + "e"
 	if _, err := decodeBencodeDict([]byte(nested)); err == nil {
 		t.Fatal("excessively nested tracker response was accepted")
+	}
+}
+
+func TestTrackerRequestErrorsDoNotExposePasskeys(t *testing.T) {
+	t.Parallel()
+
+	const secret = "private-passkey"
+	err := &url.Error{Op: "Get", URL: "https://tracker.example/" + secret + "/announce", Err: errors.New("dial failed")}
+	if got := sanitizeTrackerRequestError(err).Error(); strings.Contains(got, secret) {
+		t.Fatalf("sanitized error exposed tracker passkey: %q", got)
+	}
+	if got := trackerDisplayName("https://tracker.example/" + secret + "/announce?token=" + secret); strings.Contains(got, secret) {
+		t.Fatalf("display name exposed tracker passkey: %q", got)
 	}
 }

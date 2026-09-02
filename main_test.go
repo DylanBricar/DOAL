@@ -56,3 +56,19 @@ func TestSelectExplicitResumeEvictionIsDeterministic(t *testing.T) {
 		t.Fatalf("eviction below capacity = %q, want empty", got)
 	}
 }
+
+func TestRestartBoundConfigDetectsNetworkPolicyChanges(t *testing.T) {
+	t.Parallel()
+
+	current := &config.Config{Client: "client.client"}
+	next := cloneConfig(current)
+	next.AllowPrivateNetworks = true
+	if !restartBoundConfigChanged(current, next) {
+		t.Fatal("private-network policy change was not marked restart-bound")
+	}
+	next = cloneConfig(current)
+	next.MaxUploadRate = 500
+	if restartBoundConfigChanged(current, next) {
+		t.Fatal("live bandwidth-only change was incorrectly marked restart-bound")
+	}
+}

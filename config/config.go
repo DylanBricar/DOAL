@@ -71,6 +71,10 @@ type Config struct {
 	// rejected. It is off by default and meaningful only in FAKE_DATA mode.
 	EnablePieceProxy bool `json:"enablePieceProxy"`
 
+	// AllowPrivateNetworks permits torrent-supplied tracker and peer targets to
+	// reach private, loopback and special-use addresses. It is off by default.
+	AllowPrivateNetworks bool `json:"allowPrivateNetworks"`
+
 	// DHTBootstrapNodes contains explicitly configured DHT entry points.
 	// Any valid DNS hostname or IP address with a UDP port is accepted.
 	DHTBootstrapNodes []string `json:"dhtBootstrapNodes"`

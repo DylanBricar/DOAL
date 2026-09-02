@@ -3,10 +3,12 @@ package announce
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,23 +40,29 @@ type AnnounceResponse struct {
 
 // Announcer manages the announce lifecycle for a single torrent.
 type Announcer struct {
-	torrent          *torrent.Torrent
-	client           *ClientConfig
-	interval         int
-	seeders          int
-	leechers         int
-	lastAnnounce     time.Time
-	consecutiveFails int
-	httpClient       *http.Client
+	torrent              *torrent.Torrent
+	client               *ClientConfig
+	interval             int
+	seeders              int
+	leechers             int
+	lastAnnounce         time.Time
+	consecutiveFails     int
+	httpClient           *http.Client
+	allowPrivateNetworks bool
 }
 
 // newAnnouncer creates an Announcer for the given torrent and client config.
 func newAnnouncer(t *torrent.Torrent, client *ClientConfig, httpCl *http.Client) *Announcer {
+	return newAnnouncerWithNetworkPolicy(t, client, httpCl, true)
+}
+
+func newAnnouncerWithNetworkPolicy(t *torrent.Torrent, client *ClientConfig, httpCl *http.Client, allowPrivateNetworks bool) *Announcer {
 	return &Announcer{
-		torrent:    t,
-		client:     client,
-		interval:   1800, // default 30-minute interval
-		httpClient: httpCl,
+		torrent:              t,
+		client:               client,
+		interval:             1800, // default 30-minute interval
+		httpClient:           httpCl,
+		allowPrivateNetworks: allowPrivateNetworks,
 	}
 }
 
@@ -98,15 +106,19 @@ func (a *Announcer) AnnounceContext(ctx context.Context, params AnnounceParams) 
 
 // announceToTracker performs a single HTTP GET to a specific tracker URL.
 func (a *Announcer) announceToTracker(ctx context.Context, trackerURL string, params AnnounceParams) (*AnnounceResponse, error) {
+	trackerName := trackerDisplayName(trackerURL)
 	if !IsSupportedTrackerURL(trackerURL) {
-		return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerURL)
+		return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerName)
+	}
+	if err := validateTrackerNetworkTarget(ctx, trackerURL, a.allowPrivateNetworks); err != nil {
+		return nil, fmt.Errorf("tracker %q is blocked by network policy: %w", trackerName, err)
 	}
 
 	fullURL := a.client.BuildAnnounceURL(trackerURL, params)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("building request for %q: %w", trackerURL, err)
+		return nil, fmt.Errorf("building request for tracker %q: %w", trackerName, err)
 	}
 
 	for _, h := range a.client.RequestHeaders {
@@ -119,20 +131,36 @@ func (a *Announcer) announceToTracker(ctx context.Context, trackerURL string, pa
 
 	httpResp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %q: %w", trackerURL, err)
+		return nil, fmt.Errorf("requesting tracker %q: %w", trackerName, sanitizeTrackerRequestError(err))
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, fmt.Errorf("tracker %q returned HTTP %d", trackerURL, httpResp.StatusCode)
+		return nil, fmt.Errorf("tracker %q returned HTTP %d", trackerName, httpResp.StatusCode)
 	}
 
 	body, err := readBody(httpResp)
 	if err != nil {
-		return nil, fmt.Errorf("reading response from %q: %w", trackerURL, err)
+		return nil, fmt.Errorf("reading response from tracker %q: %w", trackerName, err)
 	}
 
 	return parseTrackerResponse(body)
+}
+
+func trackerDisplayName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "invalid"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+func sanitizeTrackerRequestError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s: %v", urlErr.Op, urlErr.Err)
+	}
+	return err
 }
 
 // readBody reads the HTTP response body, transparently decompressing gzip.
