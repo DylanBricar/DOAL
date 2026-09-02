@@ -177,7 +177,7 @@ func (e *Engine) Start() error {
 	e.scheduler = announce.NewScheduler(listenPort, cfg.AnnounceJitterPercent, cc, cfg, proxyURL,
 		func(infoHashHex string, resp *announce.AnnounceResponse) {
 			slog.Info("announce ok", "hash", infoHashHex[:12], "seeders", resp.Seeders, "leechers", resp.Leechers, "interval", resp.Interval)
-			e.dispatcher.UpdatePeers(infoHashHex, resp.Seeders, resp.Leechers)
+			disp.UpdatePeers(infoHashHex, resp.Seeders, resp.Leechers)
 
 			// Feed real seed addresses to the piece proxy (no-op if disabled).
 			e.mu.RLock()
@@ -469,27 +469,29 @@ func (e *Engine) Stop() {
 	}
 	e.seeding = false
 	sched := e.scheduler
+	cancelSeed := e.cancelSeed
 	torrents := e.watcher.GetTorrents()
 	e.mu.Unlock()
 
-	// Send stopped announces concurrently outside the lock to avoid deadlock
-	// (announce callbacks also acquire e.mu).
+	// Cancel and join periodic work before dismantling any dependencies. Final
+	// stopped announces are bounded by a shared shutdown deadline.
 	if sched != nil {
+		if cancelSeed != nil {
+			cancelSeed()
+		}
+		sched.Stop()
+		sched.Wait()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 		var wg sync.WaitGroup
 		for _, t := range torrents {
 			wg.Add(1)
 			go func(hash string) {
 				defer wg.Done()
-				sched.RemoveTorrent(hash)
+				sched.RemoveTorrentContext(ctx, hash)
 			}(t.InfoHashHex)
 		}
-		done := make(chan struct{})
-		go func() { wg.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			slog.Warn("stopped announce timeout, continuing shutdown")
-		}
+		wg.Wait()
 	}
 
 	e.mu.Lock()
@@ -507,6 +509,7 @@ func (e *Engine) Stop() {
 	}
 	if e.dispatcher != nil {
 		e.dispatcher.Stop()
+		e.dispatcher.Wait()
 		e.dispatcher = nil
 	}
 	// Reset upload stats to 0 for the next session

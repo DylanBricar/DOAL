@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+const maxClientConfigBytes int64 = 1 << 20
 
 // Header represents a single HTTP request header name/value pair.
 type Header struct {
@@ -142,9 +145,18 @@ func (c *ClientConfig) clone() *ClientConfig {
 // LoadClientConfig parses a .client JSON file, generates the initial PeerID
 // and Key, and returns a ready-to-use ClientConfig.
 func LoadClientConfig(path string) (*ClientConfig, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("client: reading %q: %w", path, err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxClientConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("client: reading %q: %w", path, err)
+	}
+	if int64(len(data)) > maxClientConfigBytes {
+		return nil, fmt.Errorf("client: %q exceeds %d bytes", path, maxClientConfigBytes)
 	}
 
 	var raw rawClientFile

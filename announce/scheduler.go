@@ -58,6 +58,7 @@ type Scheduler struct {
 	onTooManyFails func(infoHashHex string)
 	getUploaded    func(infoHashHex string) int64 // fetch uploaded bytes from dispatcher
 	stop           chan struct{}
+	done           chan struct{}
 	stopOnce       sync.Once
 }
 
@@ -103,6 +104,7 @@ func NewScheduler(
 		onTooManyFails: onTooManyFails,
 		getUploaded:    getUploaded,
 		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -162,6 +164,12 @@ func (s *Scheduler) AddTorrent(t *torrent.Torrent) {
 // RemoveTorrent sends a stopped announce and removes the torrent from the
 // scheduler. It is a best-effort operation — errors are delivered via onFailure.
 func (s *Scheduler) RemoveTorrent(infoHashHex string) {
+	s.RemoveTorrentContext(context.Background(), infoHashHex)
+}
+
+// RemoveTorrentContext removes a torrent and bounds its final stopped
+// announce by ctx.
+func (s *Scheduler) RemoveTorrentContext(ctx context.Context, infoHashHex string) {
 	s.mu.Lock()
 	entry, exists := s.announcers[infoHashHex]
 	if exists {
@@ -209,15 +217,12 @@ func (s *Scheduler) RemoveTorrent(infoHashHex string) {
 		Event:      "stopped",
 	}
 
-	resp, err := entry.announcer.Announce(params)
+	_, err := entry.announcer.AnnounceContext(ctx, params)
 	if err != nil {
 		if s.onFailure != nil {
 			s.onFailure(infoHashHex, err)
 		}
 		return
-	}
-	if s.onSuccess != nil {
-		s.onSuccess(infoHashHex, resp)
 	}
 	if entry.ring != nil {
 		if err := entry.ring.matchUploaded(uploaded); err != nil && s.onFailure != nil {
@@ -229,6 +234,7 @@ func (s *Scheduler) RemoveTorrent(infoHashHex string) {
 // Run starts the scheduling loop and blocks until ctx is cancelled or Stop is
 // called. It should be run in its own goroutine.
 func (s *Scheduler) Run(ctx context.Context) {
+	defer close(s.done)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -239,7 +245,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-s.stop:
 			return
 		case <-ticker.C:
-			s.tick()
+			s.tickContext(ctx)
 		}
 	}
 }
@@ -247,6 +253,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 // Stop signals the scheduler to stop its Run loop. Safe to call multiple times.
 func (s *Scheduler) Stop() {
 	s.stopOnce.Do(func() { close(s.stop) })
+}
+
+// Wait blocks until the scheduling loop and any in-flight periodic announces
+// have fully exited.
+func (s *Scheduler) Wait() {
+	<-s.done
 }
 
 // SetPort updates the port used in future announces (for port rotation).
@@ -265,6 +277,10 @@ func (s *Scheduler) GetPort() int {
 
 // tick iterates over all registered torrents and announces any that are due.
 func (s *Scheduler) tick() {
+	s.tickContext(context.Background())
+}
+
+func (s *Scheduler) tickContext(ctx context.Context) {
 	now := time.Now()
 
 	// Collect due entries under the read lock; announce outside the lock so
@@ -295,7 +311,7 @@ func (s *Scheduler) tick() {
 		go func() {
 			defer wg.Done()
 			for hash := range jobs {
-				s.announceOne(hash)
+				s.announceOneContext(ctx, hash)
 			}
 		}()
 	}
@@ -310,6 +326,10 @@ func (s *Scheduler) tick() {
 // It uses a per-entry mutex to guard field access, holding it only while
 // reading/writing fields — never during network I/O.
 func (s *Scheduler) announceOne(infoHashHex string) {
+	s.announceOneContext(context.Background(), infoHashHex)
+}
+
+func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) {
 	s.mu.RLock()
 	entry, exists := s.announcers[infoHashHex]
 	s.mu.RUnlock()
@@ -373,7 +393,7 @@ func (s *Scheduler) announceOne(infoHashHex string) {
 	}
 
 	// Network I/O — no locks held.
-	resp, err := entry.announcer.Announce(params)
+	resp, err := entry.announcer.AnnounceContext(ctx, params)
 	if err != nil {
 		if s.onFailure != nil {
 			s.onFailure(infoHashHex, err)

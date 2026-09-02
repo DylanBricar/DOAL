@@ -2,6 +2,7 @@ package announce
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -60,6 +61,12 @@ func newAnnouncer(t *torrent.Torrent, client *ClientConfig, httpCl *http.Client)
 // Announce sends a single announce request to the first reachable tracker
 // in the torrent's announce list and returns the parsed response.
 func (a *Announcer) Announce(params AnnounceParams) (*AnnounceResponse, error) {
+	return a.AnnounceContext(context.Background(), params)
+}
+
+// AnnounceContext sends an announce request that can be cancelled during
+// shutdown. Cancellation also prevents trying fallback trackers.
+func (a *Announcer) AnnounceContext(ctx context.Context, params AnnounceParams) (*AnnounceResponse, error) {
 	if len(a.torrent.AnnounceURLs) == 0 {
 		return nil, fmt.Errorf("announcer: no tracker URLs for %q", a.torrent.Name)
 	}
@@ -69,7 +76,7 @@ func (a *Announcer) Announce(params AnnounceParams) (*AnnounceResponse, error) {
 		err  error
 	)
 	for _, trackerURL := range a.torrent.AnnounceURLs {
-		resp, err = a.announceToTracker(trackerURL, params)
+		resp, err = a.announceToTracker(ctx, trackerURL, params)
 		if err == nil {
 			a.consecutiveFails = 0
 			a.lastAnnounce = time.Now()
@@ -80,6 +87,9 @@ func (a *Announcer) Announce(params AnnounceParams) (*AnnounceResponse, error) {
 			a.leechers = resp.Leechers
 			return resp, nil
 		}
+		if ctx.Err() != nil {
+			break
+		}
 	}
 
 	a.consecutiveFails++
@@ -87,14 +97,14 @@ func (a *Announcer) Announce(params AnnounceParams) (*AnnounceResponse, error) {
 }
 
 // announceToTracker performs a single HTTP GET to a specific tracker URL.
-func (a *Announcer) announceToTracker(trackerURL string, params AnnounceParams) (*AnnounceResponse, error) {
+func (a *Announcer) announceToTracker(ctx context.Context, trackerURL string, params AnnounceParams) (*AnnounceResponse, error) {
 	if !IsSupportedTrackerURL(trackerURL) {
 		return nil, fmt.Errorf("tracker %q is not a supported HTTP(S) URL", trackerURL)
 	}
 
 	fullURL := a.client.BuildAnnounceURL(trackerURL, params)
 
-	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request for %q: %w", trackerURL, err)
 	}

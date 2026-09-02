@@ -12,6 +12,7 @@ import (
 
 const (
 	peerMessageLimit  = 1 << 20
+	peerWriteTimeout  = 5 * time.Second
 	pexInterval       = time.Minute
 	keepAliveInterval = 2 * time.Minute
 )
@@ -88,6 +89,9 @@ func readPeerMessage(r io.Reader) ([]byte, error) {
 }
 
 func (s *Server) handlePeerMessage(conn net.Conn, info *TorrentInfo, infoHashHex string, body []byte, session *peerSession) bool {
+	if err := conn.SetWriteDeadline(time.Now().Add(peerWriteTimeout)); err != nil {
+		return false
+	}
 	switch body[0] {
 	case msgExtended:
 		previousPort := session.extensions.listenPort
@@ -139,7 +143,7 @@ func validBlockRequest(info *TorrentInfo, index, begin, length uint32) bool {
 
 func (s *Server) sendPeriodicMessages(conn net.Conn, infoHashHex string, session *peerSession, now time.Time) bool {
 	if !now.Before(session.nextKeepAlive) {
-		if err := conn.SetWriteDeadline(now.Add(5 * time.Second)); err != nil {
+		if err := conn.SetWriteDeadline(now.Add(peerWriteTimeout)); err != nil {
 			return false
 		}
 		if _, err := conn.Write([]byte{0, 0, 0, 0}); err != nil {
@@ -159,7 +163,7 @@ func (s *Server) sendPeriodicMessages(conn net.Conn, infoHashHex string, session
 			}
 			if payload := buildPEXPayload(added); len(payload) > 0 {
 				message := buildExtendedMessage(session.extensions.remotePEXID, payload, nil)
-				if err := conn.SetWriteDeadline(now.Add(5 * time.Second)); err != nil {
+				if err := conn.SetWriteDeadline(now.Add(peerWriteTimeout)); err != nil {
 					return false
 				}
 				if _, err := conn.Write(message); err != nil {

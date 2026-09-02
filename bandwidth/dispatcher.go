@@ -55,6 +55,7 @@ type Dispatcher struct {
 	totalUploaded int64 // accessed exclusively via atomic ops — mu is NOT used for this field
 	onSpeedChange func(speeds map[string]int64, totalUploaded int64)
 	stop          chan struct{}
+	done          chan struct{}
 	stopOnce      sync.Once
 }
 
@@ -77,6 +78,7 @@ func NewDispatcher(
 		flows:         make(map[string]*torrentFlow),
 		onSpeedChange: onSpeedChange,
 		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 }
 
@@ -154,6 +156,7 @@ func (d *Dispatcher) GetStats(infoHashHex string) *TorrentStats {
 
 // Run starts the main dispatch loop. It blocks until Stop is called.
 func (d *Dispatcher) Run() {
+	defer close(d.done)
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
@@ -170,6 +173,11 @@ func (d *Dispatcher) Run() {
 // Stop signals the Run loop to exit. Safe to call multiple times.
 func (d *Dispatcher) Stop() {
 	d.stopOnce.Do(func() { close(d.stop) })
+}
+
+// Wait blocks until the dispatch loop has fully exited.
+func (d *Dispatcher) Wait() {
+	<-d.done
 }
 
 // tick performs one dispatch cycle: compute speeds, accumulate uploads,
