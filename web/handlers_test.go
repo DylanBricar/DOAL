@@ -175,7 +175,7 @@ func TestHandleConfigSavePreservesWriteOnlyProxySecret(t *testing.T) {
 		MinUploadRate: 100, MaxUploadRate: 200, SimultaneousSeed: 1,
 		Client: "test.client", SpeedModel: config.SpeedModelUniform,
 		PeerResponseMode: config.PeerResponseModeNone, ProxyEnabled: true,
-		ProxyType: "socks5",
+		ProxyType: "socks5", AllowPrivateNetworks: true,
 	}
 	data, _ := json.Marshal(payload)
 	h.handleConfigSave(data)

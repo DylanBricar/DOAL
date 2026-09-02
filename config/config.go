@@ -246,6 +246,9 @@ func (c *Config) Validate() error {
 		if err != nil || proxyURL.Host == "" || proxyURL.Scheme != c.ProxyType {
 			errs = append(errs, errors.New("proxyUrl must be an absolute URL matching proxyType"))
 		}
+		if !c.AllowPrivateNetworks {
+			errs = append(errs, errors.New("proxyEnabled requires allowPrivateNetworks because the proxy resolves tracker destinations"))
+		}
 	}
 	if len(c.DHTBootstrapNodes) > MaxDHTBootstrapNodes {
 		errs = append(errs, fmt.Errorf("dhtBootstrapNodes must contain at most %d endpoints", MaxDHTBootstrapNodes))

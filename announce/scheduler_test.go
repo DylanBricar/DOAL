@@ -522,7 +522,7 @@ func TestSchedulerMultipleTorrents(t *testing.T) {
 	}
 }
 
-func TestSchedulerAllowsExplicitLocalProxyWithoutOpeningPrivateTrackers(t *testing.T) {
+func TestSchedulerAllowsExplicitLocalProxyWithPrivateNetworkOptIn(t *testing.T) {
 	t.Parallel()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -533,7 +533,7 @@ func TestSchedulerAllowsExplicitLocalProxyWithoutOpeningPrivateTrackers(t *testi
 	proxyURL := "http://" + listener.Addr().String()
 	cc := &ClientConfig{PeerID: "01234567890123456789", UserAgent: "TestClient/1.0"}
 	cfg := dummyConfig()
-	cfg.AllowPrivateNetworks = false
+	cfg.AllowPrivateNetworks = true
 	s := NewScheduler(6881, 0, cc, cfg, proxyURL, nil, nil, nil, nil)
 	transport, ok := s.httpClient.Transport.(*http.Transport)
 	if !ok {
@@ -544,7 +544,4 @@ func TestSchedulerAllowsExplicitLocalProxyWithoutOpeningPrivateTrackers(t *testi
 		t.Fatalf("explicit local proxy endpoint was blocked: %v", err)
 	}
 	conn.Close()
-	if err := validateTrackerNetworkTarget(context.Background(), "http://127.0.0.1/announce", false); err == nil {
-		t.Fatal("private tracker target was opened by configuring a local proxy")
-	}
 }

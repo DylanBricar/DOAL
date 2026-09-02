@@ -77,10 +77,7 @@ func NewScheduler(
 	getUploaded func(infoHashHex string) int64,
 ) *Scheduler {
 	allowPrivateNetworks := cfg != nil && cfg.AllowPrivateNetworks
-	// A proxy endpoint is explicit trusted configuration, not torrent-supplied
-	// input. Tracker destinations remain independently validated below.
-	allowPrivateDialTarget := allowPrivateNetworks || proxyURL != ""
-	transport := NewUTLSTransportWithNetworkPolicy(ClientHelloForEmulatedClient(strings.ToLower(client.UserAgent)), allowPrivateDialTarget)
+	transport := NewUTLSTransportWithNetworkPolicy(ClientHelloForEmulatedClient(strings.ToLower(client.UserAgent)), allowPrivateNetworks)
 	if proxyURL != "" {
 		if parsed, err := url.Parse(proxyURL); err == nil {
 			transport.Proxy = http.ProxyURL(parsed)

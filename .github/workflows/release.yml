@@ -30,7 +30,7 @@ jobs:
       - run: npm ci
       - run: npm run check:web
       - run: go vet ./...
-      - run: go test ./... -count=1 -timeout=120s
+      - run: go test -race ./... -count=1 -timeout=180s
 
   build:
     needs: test

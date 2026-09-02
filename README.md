@@ -97,7 +97,7 @@ All settings are configurable via the web UI or directly in `config.json`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `proxyEnabled` | bool | `false` | Route tracker announces through a proxy |
+| `proxyEnabled` | bool | `false` | Route tracker announces through a proxy; requires `allowPrivateNetworks` because the proxy performs its own DNS resolution |
 | `proxyType` | string | `socks5` | Proxy type (`socks5` or `http`) |
 | `proxyUrl` | string | `""` | Proxy URL (e.g. `socks5://user:pass@host:1080`) |
 | `announceIp` | string | `""` | Override IP reported to trackers (empty = auto-detect) |
@@ -111,8 +111,8 @@ Tracker announces accept public domains and IP addresses over HTTP(S).
 Malformed URLs, embedded credentials, HTTPS-to-HTTP redirects, and private or
 special-use destinations are rejected by default; direct-connection DNS
 results are pinned to prevent rebinding. Set `allowPrivateNetworks` only for a
-trusted isolated lab. An explicitly configured proxy endpoint may itself be
-local; torrent-supplied tracker destinations are still checked before use.
+trusted isolated lab. Proxy mode requires this opt-in because target DNS is
+resolved again by the configured proxy and therefore cannot be pinned locally.
 DHT traffic accepts any explicitly configured valid
 `host:port` endpoint. The lab ring is disabled by default and cannot exceed
 eight counterparties. Stop seeding before changing client or network settings;
