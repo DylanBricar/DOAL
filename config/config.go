@@ -1,18 +1,25 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-const MaxSimultaneousSeed = 512
+const (
+	MaxSimultaneousSeed  = 512
+	MaxDHTBootstrapNodes = 32
+)
 
 const (
 	SpeedModelOrganic = "ORGANIC"
@@ -90,7 +97,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := Config{SimulateDownload: true}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("config: parsing %q: %w", absPath, err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
 		return nil, fmt.Errorf("config: parsing %q: %w", absPath, err)
 	}
 
@@ -119,10 +131,43 @@ func (c *Config) SaveTo(path string) error {
 		return fmt.Errorf("config: marshalling: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("config: writing %q: %w", path, err)
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: creating temporary file for %q: %w", path, err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return fmt.Errorf("config: securing temporary file for %q: %w", path, err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return fmt.Errorf("config: writing temporary file for %q: %w", path, err)
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return fmt.Errorf("config: syncing temporary file for %q: %w", path, err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("config: closing temporary file for %q: %w", path, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("config: replacing %q: %w", path, err)
 	}
 
+	return nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values are not allowed")
+		}
+		return err
+	}
 	return nil
 }
 
@@ -146,6 +191,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Client == "" {
 		errs = append(errs, errors.New("client must not be empty"))
+	} else if filepath.Base(c.Client) != c.Client || filepath.Ext(c.Client) != ".client" {
+		errs = append(errs, errors.New("client must be a .client filename without a directory"))
+	}
+	if math.IsNaN(c.UploadRatioTarget) || math.IsInf(c.UploadRatioTarget, 0) || c.UploadRatioTarget < -1 {
+		errs = append(errs, errors.New("uploadRatioTarget must be -1, 0, or a positive number"))
 	}
 	if c.SpeedModel != SpeedModelOrganic && c.SpeedModel != SpeedModelUniform {
 		errs = append(errs, fmt.Errorf("speedModel must be %q or %q, got %q", SpeedModelOrganic, SpeedModelUniform, c.SpeedModel))
@@ -175,6 +225,29 @@ func (c *Config) Validate() error {
 	}
 	if c.EnablePortRotation {
 		errs = append(errs, errors.New("enablePortRotation is unsupported because the announced, PeerWire and DHT ports must remain identical"))
+	}
+	if c.MaxAnnounceFailures < 0 {
+		errs = append(errs, errors.New("maxAnnounceFailures must be >= 0"))
+	}
+	if c.AnnounceIP != "" {
+		if _, err := netip.ParseAddr(c.AnnounceIP); err != nil {
+			errs = append(errs, fmt.Errorf("announceIp must be a valid IP address: %w", err))
+		}
+	}
+	if c.ProxyEnabled {
+		if c.ProxyType != "socks5" && c.ProxyType != "http" {
+			errs = append(errs, errors.New("proxyType must be \"socks5\" or \"http\""))
+		}
+		proxyURL, err := url.Parse(c.ProxyURL)
+		if err != nil || proxyURL.Host == "" || proxyURL.Scheme != c.ProxyType {
+			errs = append(errs, errors.New("proxyUrl must be an absolute URL matching proxyType"))
+		}
+	}
+	if c.EnablePieceProxy && c.PeerResponseMode != PeerResponseModeFakeData {
+		errs = append(errs, errors.New("enablePieceProxy requires peerResponseMode \"FAKE_DATA\""))
+	}
+	if len(c.DHTBootstrapNodes) > MaxDHTBootstrapNodes {
+		errs = append(errs, fmt.Errorf("dhtBootstrapNodes must contain at most %d endpoints", MaxDHTBootstrapNodes))
 	}
 	for _, endpoint := range c.DHTBootstrapNodes {
 		if !isValidDHTEndpoint(endpoint) {

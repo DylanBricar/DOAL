@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,9 @@ const (
 	maxWebSocketMessageBytes  int64 = 1 << 20
 	maxWebSocketClients             = 64
 	maxSubscriptionsPerClient       = 128
+	webSocketAuthTimeout            = 5 * time.Second
+	webSocketIdleTimeout            = 30 * time.Second
+	webSocketWriteTimeout           = 5 * time.Second
 )
 
 //go:embed static/*
@@ -52,7 +56,7 @@ func NewServer(port int, pathPrefix, secretToken string, onMessage func(string, 
 	}
 
 	s.upgrader = websocket.Upgrader{
-		CheckOrigin:  websocketOriginAllowed,
+		CheckOrigin:  s.websocketOriginAllowed,
 		Subprotocols: []string{"v12.stomp", "v11.stomp"},
 	}
 
@@ -62,6 +66,22 @@ func NewServer(port int, pathPrefix, secretToken string, onMessage func(string, 
 // Start registers HTTP routes and begins listening. Blocks until the server
 // encounters a fatal error.
 func (s *Server) Start() error {
+	addr := s.listenAddress()
+	fmt.Printf("server: listening on %s, UI at /%s/ui/\n", addr, s.pathPrefix)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	return server.ListenAndServe()
+}
+
+// Handler returns the complete private-dashboard HTTP handler.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	prefix := "/" + s.pathPrefix
@@ -69,7 +89,9 @@ func (s *Server) Start() error {
 	// Serve embedded static files under /{prefix}/ui/
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		return fmt.Errorf("server: creating static sub-fs: %w", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "embedded UI unavailable", http.StatusInternalServerError)
+		})
 	}
 	uiPrefix := prefix + "/ui/"
 	mux.Handle(uiPrefix, http.StripPrefix(uiPrefix, http.FileServer(http.FS(staticSub))))
@@ -87,18 +109,20 @@ func (s *Server) Start() error {
 		http.NotFound(w, r)
 	})
 
-	addr := s.listenAddress()
-	fmt.Printf("server: listening on %s, UI at %s/ui/\n", addr, prefix)
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-	return server.ListenAndServe()
+	return securityHeaders(mux)
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers := w.Header()
+		headers.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		headers.Set("Referrer-Policy", "no-referrer")
+		headers.Set("X-Content-Type-Options", "nosniff")
+		headers.Set("X-Frame-Options", "DENY")
+		headers.Set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) listenAddress() string {
@@ -117,11 +141,23 @@ func websocketOriginAllowed(r *http.Request) bool {
 	if err != nil || parsed.Host == "" {
 		return false
 	}
-	expectedScheme := "http"
-	if r.TLS != nil {
-		expectedScheme = "https"
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && strings.EqualFold(parsed.Host, r.Host)
+}
+
+func (s *Server) websocketOriginAllowed(r *http.Request) bool {
+	if (s.secretToken == "" || s.secretToken == "x") && !isLoopbackHost(r.Host) {
+		return false
 	}
-	return strings.EqualFold(parsed.Scheme, expectedScheme) && strings.EqualFold(parsed.Host, r.Host)
+	return websocketOriginAllowed(r)
+}
+
+func isLoopbackHost(hostPort string) bool {
+	host := hostPort
+	if parsed, _, err := net.SplitHostPort(hostPort); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(strings.TrimSuffix(host, "."), "[]")
+	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
 
 // handleWebSocket upgrades an HTTP connection to WebSocket and runs the STOMP
@@ -139,7 +175,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(maxWebSocketMessageBytes)
-	_ = conn.UnderlyingConn().SetDeadline(time.Time{})
+	if err := conn.SetReadDeadline(time.Now().Add(webSocketAuthTimeout)); err != nil {
+		_ = conn.Close()
+		return
+	}
 	fmt.Printf("server: WebSocket connected: %s\n", r.RemoteAddr)
 
 	id := fmt.Sprintf("client-%d", atomic.AddUint64(&clientIDCounter, 1))
@@ -158,6 +197,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		s.handleSTOMP(c, msg)
+		c.mu.Lock()
+		authenticated := c.authenticated
+		c.mu.Unlock()
+		if authenticated {
+			if err := conn.SetReadDeadline(time.Now().Add(webSocketIdleTimeout)); err != nil {
+				break
+			}
+		}
 	}
 }
 

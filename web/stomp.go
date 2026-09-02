@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -96,6 +97,9 @@ func marshalFrame(command string, headers map[string]string, body []byte) []byte
 func (c *Client) sendFrame(command string, headers map[string]string, body []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(webSocketWriteTimeout)); err != nil {
+		return err
+	}
 	return c.conn.WriteMessage(websocket.TextMessage, marshalFrame(command, headers, body))
 }
 
@@ -105,8 +109,9 @@ func (c *Client) sendError(message string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	headers := map[string]string{"message": message}
+	_ = c.conn.SetWriteDeadline(time.Now().Add(webSocketWriteTimeout))
 	_ = c.conn.WriteMessage(websocket.TextMessage, marshalFrame("ERROR", headers, []byte(message)))
-	c.conn.Close()
+	_ = c.conn.Close()
 }
 
 // SendToAll sends a STOMP MESSAGE frame to all clients subscribed to destination.
