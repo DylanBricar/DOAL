@@ -275,6 +275,14 @@ func (s *Scheduler) GetPort() int {
 	return s.port
 }
 
+// TorrentCount returns the number of torrents currently occupying scheduler
+// slots.
+func (s *Scheduler) TorrentCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.announcers)
+}
+
 // tick iterates over all registered torrents and announces any that are due.
 func (s *Scheduler) tick() {
 	s.tickContext(context.Background())

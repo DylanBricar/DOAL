@@ -143,11 +143,6 @@ func (e *Engine) Start() error {
 	disp.SetTotalUploaded(prevUploaded)
 	e.dispatcher = disp
 
-	// Register existing torrents
-	for _, t := range e.watcher.GetTorrents() {
-		e.dispatcher.RegisterTorrent(t.InfoHashHex, t.Size)
-	}
-
 	// Start dispatcher
 	seedCtx, cancelSeed := context.WithCancel(context.Background())
 	e.cancelSeed = cancelSeed
@@ -245,6 +240,7 @@ func (e *Engine) Start() error {
 	for i, t := range torrents {
 		if i < cfg.SimultaneousSeed {
 			e.scheduler.AddTorrent(t)
+			disp.RegisterTorrent(t.InfoHashHex, t.Size)
 		}
 	}
 	go e.scheduler.Run(seedCtx)
@@ -706,6 +702,36 @@ func main() {
 	watcher.OnAdd = func(t *torrent.Torrent) {
 		slog.Info("torrent added", "name", t.Name, "hash", t.InfoHashHex)
 		handlers.BroadcastTorrentAdded(t)
+		engine.mu.RLock()
+		seeding := engine.seeding
+		disp := engine.dispatcher
+		sched := engine.scheduler
+		pw := engine.peerWire
+		dhtNode := engine.dhtNode
+		cc := engine.clientConfig
+		simultaneous := 0
+		if engine.cfg != nil {
+			simultaneous = engine.cfg.SimultaneousSeed
+		}
+		engine.mu.RUnlock()
+		if !seeding {
+			return
+		}
+		if pw != nil && cc != nil {
+			pw.RegisterTorrent(peerwire.TorrentInfo{
+				InfoHash: t.InfoHash, PieceCount: t.PieceCount, PeerID: []byte(cc.PeerID),
+				PieceHashes: t.PieceHashes, PieceLength: t.PieceLength, TotalSize: t.Size, Metadata: t.InfoBytes,
+			})
+		}
+		if dhtNode != nil {
+			dhtNode.AddTorrent(t.InfoHashHex)
+		}
+		if sched != nil && sched.TorrentCount() < simultaneous {
+			sched.AddTorrent(t)
+			if disp != nil {
+				disp.RegisterTorrent(t.InfoHashHex, t.Size)
+			}
+		}
 	}
 	watcher.OnRemove = func(t *torrent.Torrent) {
 		slog.Info("torrent removed", "name", t.Name, "hash", t.InfoHashHex)

@@ -280,7 +280,7 @@ func (d *Dispatcher) computeTorrentSpeed(hash string, baseSpeed int64, torrentCo
 
 	p := d.peers[hash]
 	noLeechers := p.Leechers == 0
-	if noLeechers {
+	if noLeechers && !d.config.KeepTorrentWithZeroLeechers {
 		return 0
 	}
 
