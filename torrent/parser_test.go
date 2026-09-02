@@ -229,3 +229,20 @@ func TestAnnounceURLDeduplication(t *testing.T) {
 		t.Errorf("expected 2 unique URLs, got %d: %v", len(urls), urls)
 	}
 }
+
+func TestDecodeBencodeStringRejectsOverflowingLength(t *testing.T) {
+	t.Parallel()
+
+	if _, _, err := decodeBencode([]byte("999999999999999999999999999999999999:abc"), 0); err == nil {
+		t.Fatal("overflowing bencode string length was accepted")
+	}
+}
+
+func TestDecodeBencodeRejectsExcessiveNesting(t *testing.T) {
+	t.Parallel()
+
+	nested := strings.Repeat("l", 129) + strings.Repeat("e", 129)
+	if _, _, err := decodeBencode([]byte(nested), 0); err == nil {
+		t.Fatal("excessively nested torrent metadata was accepted")
+	}
+}

@@ -4,8 +4,25 @@ import (
 	"bytes"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestEmbeddedUISupportsAuthenticatedRemoteMode(t *testing.T) {
+	t.Parallel()
+
+	html, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded UI: %v", err)
+	}
+	page := string(html)
+	if !strings.Contains(page, "X-Joal-Auth-Token") {
+		t.Fatal("embedded UI never sends the configured WebSocket auth token")
+	}
+	if !strings.Contains(page, "type=\"password\"") {
+		t.Fatal("embedded UI has no secure token input for remote mode")
+	}
+}
 
 func TestWebSocketOriginPolicy(t *testing.T) {
 	same := httptest.NewRequest("GET", "https://dashboard.example.com/doal", nil)

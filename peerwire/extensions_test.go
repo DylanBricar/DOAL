@@ -3,6 +3,7 @@ package peerwire
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -138,5 +139,13 @@ func TestPEXPayloadContainsLiveIPv4Peers(t *testing.T) {
 	}
 	if !bytes.Contains(payload, []byte("7:added.f1:")) {
 		t.Fatalf("PEX payload %q does not contain one flags byte", payload)
+	}
+}
+
+func TestMetadataResponseRejectsOverflowingPieceIndex(t *testing.T) {
+	t.Parallel()
+
+	if _, err := buildMetadataResponse(7, []byte("metadata"), math.MaxInt); err == nil {
+		t.Fatal("overflowing metadata piece index was accepted")
 	}
 }
