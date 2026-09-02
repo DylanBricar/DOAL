@@ -3,10 +3,45 @@ package web
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestHTTPHandlerAddsPrivateDashboardSecurityHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(0, "doal", "x", nil)
+	request := httptest.NewRequest(http.MethodGet, "/doal/ui/", nil)
+	request.Host = "127.0.0.1"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	wantHeaders := map[string]string{
+		"X-Robots-Tag":            "noindex",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Content-Security-Policy": "frame-ancestors 'none'",
+	}
+	for name, want := range wantHeaders {
+		if got := response.Header().Get(name); !strings.Contains(got, want) {
+			t.Errorf("%s = %q, want it to contain %q", name, got, want)
+		}
+	}
+}
+
+func TestLocalModeRejectsDNSRebindingOrigin(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(0, "doal", "x", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://evil.example/doal", nil)
+	request.Host = "evil.example"
+	request.Header.Set("Origin", "http://evil.example")
+	if server.websocketOriginAllowed(request) {
+		t.Fatal("local mode accepted a non-loopback Host and Origin")
+	}
+}
 
 func TestEmbeddedUISupportsAuthenticatedRemoteMode(t *testing.T) {
 	t.Parallel()

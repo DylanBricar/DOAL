@@ -4,6 +4,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -338,5 +340,73 @@ func TestLoadPreservesExplicitDisabledSimulatedDownload(t *testing.T) {
 	}
 	if cfg.SimulateDownload {
 		t.Fatal("explicit simulateDownload=false should be preserved")
+	}
+}
+
+func TestValidationRejectsUnsafeClientAndProxyConfiguration(t *testing.T) {
+	t.Parallel()
+
+	base := Config{
+		MinUploadRate:    1,
+		MaxUploadRate:    2,
+		SimultaneousSeed: 1,
+		Client:           "safe.client",
+		SpeedModel:       SpeedModelOrganic,
+		PeerResponseMode: PeerResponseModeNone,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "client traversal", mutate: func(cfg *Config) { cfg.Client = "../secret.client" }},
+		{name: "wrong client extension", mutate: func(cfg *Config) { cfg.Client = "profile.json" }},
+		{name: "enabled proxy without URL", mutate: func(cfg *Config) { cfg.ProxyEnabled = true; cfg.ProxyType = "socks5" }},
+		{name: "proxy type mismatch", mutate: func(cfg *Config) {
+			cfg.ProxyEnabled = true
+			cfg.ProxyType = "socks5"
+			cfg.ProxyURL = "http://proxy.example:8080"
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("unsafe configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := []byte(`{"minUploadRate":1,"maxUploadRate":2,"simultaneousSeed":1,"client":"safe.client","speedModel":"ORGANIC","peerResponseMode":"NONE","typoField":true}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown field was not rejected: %v", err)
+	}
+}
+
+func TestSaveToUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX owner-only mode bits")
+	}
+
+	cfg := &Config{}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config mode = %o, want 600", got)
 	}
 }
