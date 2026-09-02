@@ -141,7 +141,13 @@ func websocketOriginAllowed(r *http.Request) bool {
 	if err != nil || parsed.Host == "" {
 		return false
 	}
-	return (parsed.Scheme == "http" || parsed.Scheme == "https") && strings.EqualFold(parsed.Host, r.Host)
+	expectedScheme := "http"
+	if r.TLS != nil {
+		expectedScheme = "https"
+	} else if forwarded := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); forwarded == "https" {
+		expectedScheme = "https"
+	}
+	return parsed.Scheme == expectedScheme && strings.EqualFold(parsed.Host, r.Host)
 }
 
 func (s *Server) websocketOriginAllowed(r *http.Request) bool {
@@ -174,6 +180,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("server: WebSocket upgrade failed: %v\n", err)
 		return
 	}
+	defer conn.Close()
 	conn.SetReadLimit(maxWebSocketMessageBytes)
 	if err := conn.SetReadDeadline(time.Now().Add(webSocketAuthTimeout)); err != nil {
 		_ = conn.Close()

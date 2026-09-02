@@ -185,11 +185,15 @@ func (s *Scheduler) RemoveTorrentContext(ctx context.Context, infoHashHex string
 	announceDone := entry.announceDone
 	entry.mu.Unlock()
 	if announceDone != nil {
-		<-announceDone
+		select {
+		case <-announceDone:
+		case <-ctx.Done():
+			return
+		}
 	}
 	if entry.ring != nil {
 		defer func() {
-			if err := entry.ring.stop(); err != nil && s.onFailure != nil {
+			if err := entry.ring.stopContext(ctx); err != nil && s.onFailure != nil {
 				s.onFailure(infoHashHex, err)
 			}
 		}()
@@ -225,7 +229,7 @@ func (s *Scheduler) RemoveTorrentContext(ctx context.Context, infoHashHex string
 		return
 	}
 	if entry.ring != nil {
-		if err := entry.ring.matchUploaded(uploaded); err != nil && s.onFailure != nil {
+		if err := entry.ring.matchUploadedContext(ctx, uploaded); err != nil && s.onFailure != nil {
 			s.onFailure(infoHashHex, err)
 		}
 	}
@@ -436,7 +440,7 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 				s.onTooManyFails(infoHashHex)
 			}
 			if entry.ring != nil {
-				if err := entry.ring.stop(); err != nil && s.onFailure != nil {
+				if err := entry.ring.stopContext(ctx); err != nil && s.onFailure != nil {
 					s.onFailure(infoHashHex, err)
 				}
 			}
@@ -448,7 +452,7 @@ func (s *Scheduler) announceOneContext(ctx context.Context, infoHashHex string) 
 		s.onSuccess(infoHashHex, resp)
 	}
 	if entry.ring != nil {
-		if err := entry.ring.matchUploaded(uploaded); err != nil && s.onFailure != nil {
+		if err := entry.ring.matchUploadedContext(ctx, uploaded); err != nil && s.onFailure != nil {
 			s.onFailure(infoHashHex, err)
 		}
 	}

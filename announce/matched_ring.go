@@ -1,6 +1,7 @@
 package announce
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -112,6 +113,10 @@ func (r *matchedRing) freshActor() (*matchedActor, error) {
 // matchUploaded distributes the newly observed cumulative upload among the
 // counterparty downloads. State advances only after successful announces.
 func (r *matchedRing) matchUploaded(cumulativeUploaded int64) error {
+	return r.matchUploadedContext(context.Background(), cumulativeUploaded)
+}
+
+func (r *matchedRing) matchUploadedContext(ctx context.Context, cumulativeUploaded int64) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 
@@ -132,7 +137,7 @@ func (r *matchedRing) matchUploaded(cumulativeUploaded int64) error {
 			downloaded := actor.downloaded
 			r.mu.Unlock()
 			if downloaded >= r.torrent.Size {
-				if err := r.rotateActor(index); err != nil {
+				if err := r.rotateActor(ctx, index); err != nil {
 					return err
 				}
 				r.mu.Lock()
@@ -153,7 +158,7 @@ func (r *matchedRing) matchUploaded(cumulativeUploaded int64) error {
 				r.mu.Unlock()
 				continue
 			}
-			if err := r.applyDownload(actor, allocation); err != nil {
+			if err := r.applyDownload(ctx, actor, allocation); err != nil {
 				return err
 			}
 			remaining -= allocation
@@ -171,13 +176,13 @@ func (r *matchedRing) matchUploaded(cumulativeUploaded int64) error {
 	return nil
 }
 
-func (r *matchedRing) applyDownload(actor *matchedActor, allocation int64) error {
+func (r *matchedRing) applyDownload(ctx context.Context, actor *matchedActor, allocation int64) error {
 	r.mu.Lock()
 	started := actor.started
 	downloaded := actor.downloaded
 	r.mu.Unlock()
 	if !started {
-		if _, err := actor.announcer.Announce(r.params(actor, 0, "started")); err != nil {
+		if _, err := actor.announcer.AnnounceContext(ctx, r.params(actor, 0, "started")); err != nil {
 			return fmt.Errorf("starting matched counterparty: %w", err)
 		}
 		r.mu.Lock()
@@ -191,7 +196,7 @@ func (r *matchedRing) applyDownload(actor *matchedActor, allocation int64) error
 		event = "completed"
 	}
 	params := r.params(actor, nextDownloaded, event)
-	if _, err := actor.announcer.Announce(params); err != nil {
+	if _, err := actor.announcer.AnnounceContext(ctx, params); err != nil {
 		return fmt.Errorf("updating matched counterparty: %w", err)
 	}
 	r.mu.Lock()
@@ -200,14 +205,14 @@ func (r *matchedRing) applyDownload(actor *matchedActor, allocation int64) error
 	return nil
 }
 
-func (r *matchedRing) rotateActor(index int) error {
+func (r *matchedRing) rotateActor(ctx context.Context, index int) error {
 	r.mu.Lock()
 	old := r.actors[index]
 	started := old.started
 	downloaded := old.downloaded
 	r.mu.Unlock()
 	if started {
-		if _, err := old.announcer.Announce(r.params(old, downloaded, "stopped")); err != nil {
+		if _, err := old.announcer.AnnounceContext(ctx, r.params(old, downloaded, "stopped")); err != nil {
 			return fmt.Errorf("stopping completed matched counterparty: %w", err)
 		}
 		r.mu.Lock()
@@ -244,6 +249,10 @@ func (r *matchedRing) params(actor *matchedActor, downloaded int64, event string
 }
 
 func (r *matchedRing) stop() error {
+	return r.stopContext(context.Background())
+}
+
+func (r *matchedRing) stopContext(ctx context.Context) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 
@@ -259,7 +268,7 @@ func (r *matchedRing) stop() error {
 		if !started {
 			continue
 		}
-		if _, err := actor.announcer.Announce(r.params(actor, downloaded, "stopped")); err != nil {
+		if _, err := actor.announcer.AnnounceContext(ctx, r.params(actor, downloaded, "stopped")); err != nil {
 			errs = append(errs, err)
 			continue
 		}

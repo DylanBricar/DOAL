@@ -4,12 +4,16 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 )
 
-const maxBencodeDepth = 128
+const (
+	maxBencodeDepth    = 128
+	maxTorrentFileSize = 16 << 20
+)
 
 // Torrent holds the essential metadata extracted from a .torrent file.
 type Torrent struct {
@@ -27,25 +31,27 @@ type Torrent struct {
 
 // ParseFile reads and parses the .torrent file at the given path.
 func ParseFile(path string) (*Torrent, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("torrent: reading %q: %w", path, err)
 	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxTorrentFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("torrent: reading %q: %w", path, err)
+	}
+	if len(data) > maxTorrentFileSize {
+		return nil, fmt.Errorf("torrent: %q exceeds %d bytes", path, maxTorrentFileSize)
+	}
 
-	raw, _, err := decodeBencode(data, 0)
+	dict, infoRaw, infoBytes, end, err := decodeTorrentMetainfo(data)
 	if err != nil {
 		return nil, fmt.Errorf("torrent: decoding bencode in %q: %w", path, err)
 	}
-
-	dict, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("torrent: top-level bencode value is not a dictionary in %q", path)
+	if end != len(data) {
+		return nil, fmt.Errorf("torrent: trailing data at offset %d in %q", end, path)
 	}
-
-	infoHash, infoRaw, infoBytes, err := extractInfoHash(data)
-	if err != nil {
-		return nil, fmt.Errorf("torrent: %w", err)
-	}
+	infoHash := sha1.Sum(infoBytes)
 
 	infoDict, ok := infoRaw.(map[string]any)
 	if !ok {
@@ -58,6 +64,22 @@ func ParseFile(path string) (*Torrent, error) {
 	pieceCount := len(pieces) / 20
 	pieceLength := intField(infoDict, "piece length")
 	announceURLs := extractAnnounceURLs(dict)
+	if name == "" {
+		return nil, fmt.Errorf("torrent: info name is empty in %q", path)
+	}
+	if size <= 0 {
+		return nil, fmt.Errorf("torrent: info size must be positive in %q", path)
+	}
+	if pieceLength <= 0 {
+		return nil, fmt.Errorf("torrent: piece length must be positive in %q", path)
+	}
+	if len(pieces) == 0 || len(pieces)%sha1.Size != 0 {
+		return nil, fmt.Errorf("torrent: pieces length must be a positive multiple of %d in %q", sha1.Size, path)
+	}
+	expectedPieceCount := int((size + pieceLength - 1) / pieceLength)
+	if pieceCount != expectedPieceCount {
+		return nil, fmt.Errorf("torrent: piece count %d does not match size and piece length (want %d) in %q", pieceCount, expectedPieceCount, path)
+	}
 
 	// Extract individual piece hashes (20 bytes each)
 	var pieceHashes [][20]byte
@@ -83,25 +105,60 @@ func ParseFile(path string) (*Torrent, error) {
 	return t, nil
 }
 
-// extractInfoHash finds the "info" key in the raw bencode bytes, re-encodes
-// the value span, and SHA-1 hashes it.
+// extractInfoHash locates the exact top-level "info" value span and hashes its
+// original bytes, as required by BEP 3.
 func extractInfoHash(data []byte) ([20]byte, any, []byte, error) {
-	// Locate "4:info" in the byte stream.
-	marker := []byte("4:info")
-	idx := indexBytes(data, marker)
-	if idx < 0 {
-		return [20]byte{}, nil, nil, fmt.Errorf("info key not found in torrent data")
-	}
-
-	valueStart := idx + len(marker)
-	value, end, err := decodeBencode(data, valueStart)
+	_, value, infoBytes, end, err := decodeTorrentMetainfo(data)
 	if err != nil {
-		return [20]byte{}, nil, nil, fmt.Errorf("decoding info dictionary: %w", err)
+		return [20]byte{}, nil, nil, err
 	}
-
-	infoBytes := append([]byte(nil), data[valueStart:end]...)
+	if end != len(data) {
+		return [20]byte{}, nil, nil, fmt.Errorf("trailing data at offset %d", end)
+	}
 	hash := sha1.Sum(infoBytes)
 	return hash, value, infoBytes, nil
+}
+
+func decodeTorrentMetainfo(data []byte) (map[string]any, any, []byte, int, error) {
+	if len(data) == 0 || data[0] != 'd' {
+		return nil, nil, nil, 0, fmt.Errorf("top-level bencode value is not a dictionary")
+	}
+	dict := make(map[string]any)
+	var info any
+	var infoBytes []byte
+	offset := 1
+	for {
+		if offset >= len(data) {
+			return nil, nil, nil, offset, fmt.Errorf("unterminated top-level dictionary")
+		}
+		if data[offset] == 'e' {
+			offset++
+			break
+		}
+		key, next, err := decodeString(data, offset)
+		if err != nil {
+			return nil, nil, nil, offset, fmt.Errorf("top-level dictionary key: %w", err)
+		}
+		if _, duplicate := dict[key]; duplicate {
+			return nil, nil, nil, offset, fmt.Errorf("duplicate top-level key %q", key)
+		}
+		offset = next
+		valueStart := offset
+		value, next, err := decodeBencodeDepth(data, offset, 1)
+		if err != nil {
+			return nil, nil, nil, offset, fmt.Errorf("top-level value for key %q: %w", key, err)
+		}
+		dict[key] = value
+		if key == "info" {
+			info = value
+			infoBytes = append([]byte(nil), data[valueStart:next]...)
+		}
+		offset = next
+	}
+	if info == nil {
+		return nil, nil, nil, offset, fmt.Errorf("top-level info key not found")
+	}
+	return dict, info, infoBytes, offset, nil
 }
 
 // extractAnnounceURLs collects tracker URLs from "announce" and "announce-list".

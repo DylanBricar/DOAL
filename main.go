@@ -74,18 +74,20 @@ func fetchPublicIPFrom(ctx context.Context, client *http.Client, providers []str
 			}
 		}()
 	}
-	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(done)
+		close(results)
 	}()
-	select {
-	case ip := <-results:
-		return ip
-	case <-done:
-		return ""
-	case <-ctx.Done():
-		return ""
+	for {
+		select {
+		case ip, ok := <-results:
+			if !ok {
+				return ""
+			}
+			return ip
+		case <-ctx.Done():
+			return ""
+		}
 	}
 }
 

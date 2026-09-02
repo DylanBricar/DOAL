@@ -146,8 +146,17 @@ func (w *Watcher) handleAdd(path string) {
 	}
 
 	w.mu.Lock()
+	previous := w.torrents[path]
+	if previous != nil && previous.InfoHashHex == t.InfoHashHex {
+		w.mu.Unlock()
+		return
+	}
 	w.torrents[path] = t
 	w.mu.Unlock()
+
+	if previous != nil && w.OnRemove != nil {
+		w.OnRemove(previous)
+	}
 
 	if w.OnAdd != nil {
 		w.OnAdd(t)

@@ -597,11 +597,9 @@ func (h *Handlers) BroadcastTrackerStats(stats map[string]int64) {
 // torrentPayload converts a Torrent to a map suitable for JSON serialization.
 func torrentPayload(t *torrent.Torrent) map[string]interface{} {
 	return map[string]interface{}{
-		"infoHash":     t.InfoHashHex,
-		"name":         t.Name,
-		"size":         t.Size,
-		"pieceCount":   t.PieceCount,
-		"announceURLs": t.AnnounceURLs,
-		"filePath":     t.FilePath,
+		"infoHash":   t.InfoHashHex,
+		"name":       t.Name,
+		"size":       t.Size,
+		"pieceCount": t.PieceCount,
 	}
 }

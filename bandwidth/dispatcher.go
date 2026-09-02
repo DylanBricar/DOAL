@@ -199,8 +199,17 @@ func (d *Dispatcher) tick() {
 		return
 	}
 
-	torrentCount := len(d.stats)
-	if torrentCount == 0 {
+	eligibleCount := 0
+	for hash := range d.stats {
+		if d.paused[hash] {
+			continue
+		}
+		if d.peers[hash].Leechers == 0 && !d.config.KeepTorrentWithZeroLeechers {
+			continue
+		}
+		eligibleCount++
+	}
+	if len(d.stats) == 0 {
 		speeds := d.snapshotSpeeds()
 		total := atomic.LoadInt64(&d.totalUploaded)
 		d.mu.Unlock()
@@ -219,7 +228,7 @@ func (d *Dispatcher) tick() {
 		if flow != nil {
 			baseSpeed = flow.sample(now, d.config.EnableBurstSpeed)
 		}
-		speed := d.computeTorrentSpeed(hash, baseSpeed, torrentCount)
+		speed := d.computeTorrentSpeed(hash, baseSpeed, eligibleCount)
 		d.speeds[hash] = speed
 		if !d.paused[hash] {
 			gained := speed * tickSeconds
@@ -269,6 +278,9 @@ func (d *Dispatcher) computeTorrentSpeed(hash string, baseSpeed int64, torrentCo
 	}
 	speed := baseSpeed
 	if speed <= 0 {
+		return 0
+	}
+	if torrentCount == 0 {
 		return 0
 	}
 
