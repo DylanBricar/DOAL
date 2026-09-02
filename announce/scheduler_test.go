@@ -200,6 +200,18 @@ func TestSchedulerAddTorrentIdempotent(t *testing.T) {
 	}
 }
 
+func TestSchedulerTorrentCountTracksMembership(t *testing.T) {
+	s := newTestScheduler()
+	tor := dummyTorrent("counted", "abababababababababab")
+	if got := s.TorrentCount(); got != 0 {
+		t.Fatalf("initial TorrentCount = %d, want 0", got)
+	}
+	s.AddTorrent(tor)
+	if got := s.TorrentCount(); got != 1 {
+		t.Fatalf("TorrentCount after add = %d, want 1", got)
+	}
+}
+
 // TestSchedulerHasTorrentAbsent verifies HasTorrent returns false for unknown hash.
 func TestSchedulerHasTorrentAbsent(t *testing.T) {
 	s := newTestScheduler()

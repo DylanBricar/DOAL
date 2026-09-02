@@ -346,6 +346,23 @@ func TestNoLeechersProduceARealZeroPlateau(t *testing.T) {
 	}
 }
 
+func TestKeepTorrentWithZeroLeechersPreservesConfiguredSpeed(t *testing.T) {
+	t.Parallel()
+
+	cfg := newTestConfig(100, 200, true, config.SpeedModelUniform)
+	cfg.KeepTorrentWithZeroLeechers = true
+	d := NewDispatcher(cfg, NewRandomSpeedProvider(100_000, 200_000), nil)
+	d.RegisterTorrent("quiet", 0)
+	d.UpdatePeers("quiet", 4, 0)
+
+	d.mu.Lock()
+	got := d.computeTorrentSpeed("quiet", 150_000, 1)
+	d.mu.Unlock()
+	if got != 150_000 {
+		t.Fatalf("speed with keep-zero-leechers enabled = %d, want 150000", got)
+	}
+}
+
 func TestWarmupStartsAtZeroWithoutArtificialFloor(t *testing.T) {
 	t.Parallel()
 
