@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -603,22 +604,26 @@ func (e *Engine) rotateTorrents() {
 
 // SaveConfig validates and persists cfg, then updates the engine's active config.
 func (e *Engine) SaveConfig(cfg *config.Config) error {
-	if err := cfg.Validate(); err != nil {
+	if cfg == nil {
+		return errors.New("engine: config is nil")
+	}
+	stored := cloneConfig(cfg)
+	if err := stored.Validate(); err != nil {
 		return fmt.Errorf("engine: invalid config: %w", err)
 	}
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	confPath := filepath.Join(e.confDir, "config.json")
-	if err := cfg.SaveTo(confPath); err != nil {
+	if err := stored.SaveTo(confPath); err != nil {
 		return fmt.Errorf("engine: saving config: %w", err)
 	}
 
-	e.mu.Lock()
-	e.cfg = cfg
+	e.cfg = stored
 	// If seeding, update the dispatcher's config live
 	if e.seeding && e.dispatcher != nil {
-		e.dispatcher.UpdateConfig(cfg)
+		e.dispatcher.UpdateConfig(stored)
 	}
-	e.mu.Unlock()
 
 	return nil
 }
@@ -627,7 +632,16 @@ func (e *Engine) SaveConfig(cfg *config.Config) error {
 func (e *Engine) GetConfig() *config.Config {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.cfg
+	return cloneConfig(e.cfg)
+}
+
+func cloneConfig(cfg *config.Config) *config.Config {
+	if cfg == nil {
+		return nil
+	}
+	clone := *cfg
+	clone.DHTBootstrapNodes = append([]string(nil), cfg.DHTBootstrapNodes...)
+	return &clone
 }
 
 // GetClientFiles returns the list of .client filenames available in the clients directory.
