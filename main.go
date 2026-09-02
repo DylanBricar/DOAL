@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,25 +34,58 @@ func fetchPublicIP() string {
 		"https://checkip.amazonaws.com",
 		"https://icanhazip.com",
 		"https://ifconfig.me/ip",
-		"http://ident.me/",
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	for _, url := range providers {
-		resp, err := client.Get(url)
-		if err != nil {
-			continue
-		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 128))
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		ip := strings.TrimSpace(string(body))
-		if ip != "" && len(ip) < 46 { // valid IPv4 or IPv6
-			return ip
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return fetchPublicIPFrom(ctx, &http.Client{}, providers)
+}
+
+func fetchPublicIPFrom(ctx context.Context, client *http.Client, providers []string) string {
+	results := make(chan string, len(providers))
+	var wg sync.WaitGroup
+	for _, provider := range providers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, provider, nil)
+			if err != nil {
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 129))
+			if err != nil || len(body) > 128 {
+				return
+			}
+			ip, err := netip.ParseAddr(strings.TrimSpace(string(body)))
+			if err != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+				return
+			}
+			select {
+			case results <- ip.String():
+			case <-ctx.Done():
+			}
+		}()
 	}
-	return ""
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case ip := <-results:
+		return ip
+	case <-done:
+		return ""
+	case <-ctx.Done():
+		return ""
+	}
 }
 
 // Engine holds all running subsystems and coordinates start/stop.
