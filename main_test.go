@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"doal/config"
 )
 
 func TestFetchPublicIPFromValidatesStatusAndAddress(t *testing.T) {
@@ -27,5 +29,16 @@ func TestFetchPublicIPFromValidatesStatusAndAddress(t *testing.T) {
 	}
 	if got := fetchPublicIPFrom(context.Background(), server.Client(), []string{server.URL + "/valid"}); got != "203.0.113.8" {
 		t.Fatalf("valid provider response produced %q", got)
+	}
+}
+
+func TestGetConfigReturnsIndependentSnapshot(t *testing.T) {
+	engine := &Engine{cfg: &config.Config{Client: "original.client", DHTBootstrapNodes: []string{"node.example:6881"}}}
+	snapshot := engine.GetConfig()
+	snapshot.Client = "changed.client"
+	snapshot.DHTBootstrapNodes[0] = "changed.example:6881"
+
+	if engine.cfg.Client != "original.client" || engine.cfg.DHTBootstrapNodes[0] != "node.example:6881" {
+		t.Fatalf("GetConfig exposed mutable engine state: %+v", engine.cfg)
 	}
 }
