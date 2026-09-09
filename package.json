@@ -11,7 +11,7 @@
   },
   "devDependencies": {
     "@tailwindcss/cli": "4.3.3",
-    "lucide": "1.39.0",
+    "lucide": "1.41.0",
     "tailwindcss": "4.3.3"
   }
 }
