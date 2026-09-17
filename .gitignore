@@ -13,10 +13,18 @@ torrents/
 # Logs
 *.log
 
+# Environment and temporary files
+.env
+.env.*
+!.env.example
+*.tmp
+*.bak
+
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
 
 # OS
 .DS_Store
@@ -25,6 +33,7 @@ Thumbs.db
 # Go
 vendor/
 coverage.out
+coverage/
 *~
 
 # Frontend build dependencies
