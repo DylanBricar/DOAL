@@ -36,6 +36,16 @@ $env:DOAL_SECRET_TOKEN = "x" # local development only
 
 Then open **http://localhost:5082/** (auto-redirects to the UI)
 
+### Windows Start menu launcher
+
+Copy `scripts/start-windows.ps1` beside `doal.exe` and point the Start menu
+shortcut to that copy. The launcher reads `DOAL_SECRET_TOKEN` from the user's
+environment, starts DOAL only if it is not already running, waits for the local
+UI on port 5082, and opens it in the default browser. It uses
+`%LOCALAPPDATA%\DOAL` for `config.json`, clients, torrents, and startup logs.
+Set the user environment variable before using the shortcut. If startup fails,
+the launcher shows an error and writes `launcher-error.log` in that data directory.
+
 ### CLI flags
 
 | Flag | Default | Description |
