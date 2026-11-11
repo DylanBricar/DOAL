@@ -10,8 +10,8 @@
     "check:web": "npm run build:web && git diff --exit-code -- web/static/app.css web/static/lucide.min.js"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "4.3.3",
-    "lucide": "1.48.0",
-    "tailwindcss": "4.3.3"
+    "@tailwindcss/cli": "4.3.5",
+    "lucide": "1.70.0",
+    "tailwindcss": "4.3.5"
   }
 }
